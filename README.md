@@ -29,7 +29,8 @@ repository, not just repositories owned by GrantChain.
 6. Open a draft PR containing `Closes #N`, the summary, changed files, and test
    plan.
 7. Use the upstream repository's CI as the execution boundary. If CI fails,
-   supply its diagnostics to DeepSeek for up to two repair commits.
+   download failed check annotations and GitHub Actions job logs, preload the
+   PR's changed files, and run a focused DeepSeek repair for up to two commits.
 8. Mark the PR ready for review only after CI succeeds. If no CI appears, keep
    the PR draft and notify the user.
 
@@ -51,6 +52,7 @@ cannot consume the shared DeepSeek balance.
 - `/assigned` — list open assigned GrantFox issues
 - `/solve <issue-url>` — queue one assigned issue
 - `/solveall` — queue all assigned GrantFox issues
+- `/retrypr <PR-number>` — retry a stopped solver PR and reset its repair counters
 - `/autoon` and `/autooff` — control five-minute automatic discovery
 - `/solverstatus` — show durable job states
 - `/pause` and `/resume` — pause or resume new issue implementations; existing
@@ -70,12 +72,14 @@ DEEPSEEK_MODEL=deepseek-v4-flash
 GRANTFOX_LABEL=GrantFox OSS
 ASSIGNMENT_POLL_SECONDS=300
 SOLVER_MAX_TURNS=30
+SOLVER_REPAIR_MAX_TURNS=16
 SOLVER_MAX_REPAIR_ATTEMPTS=2
 DATABASE_URL=postgresql://user:password@host/database
 ```
 
-The GitHub token needs issue/metadata read access, permission to create and push
-branches in the user's fork, and pull-request write access on target repositories.
+The GitHub token needs issue/metadata read access, Checks read access, Actions
+read access for job logs, permission to create and push branches in the user's
+fork, and pull-request write access on target repositories.
 A numeric `TELEGRAM_OWNER_ID` makes every command private to one Telegram account.
 You can obtain your numeric ID from Telegram's `@userinfobot`; do not use your
 `@username` in this setting.

@@ -17,7 +17,7 @@ from telegram.ext import (
 from app.models.database import AsyncSessionLocal, IssueJob, SolverUser
 from app.services import github as gh
 from app.services.crypto import decrypt_token, encrypt_token
-from app.services.solver_queue import discover_for_user, enqueue_issue
+from app.services.solver_queue import discover_for_user, enqueue_issue, retry_draft_pr
 
 logger = logging.getLogger(__name__)
 WAITING_FOR_TOKEN = 1
@@ -51,6 +51,7 @@ def build_application(token: str) -> Application:
     application.add_handler(CommandHandler("assigned", assigned))
     application.add_handler(CommandHandler("solve", solve))
     application.add_handler(CommandHandler("solveall", solve_all))
+    application.add_handler(CommandHandler("retrypr", retry_pr))
     application.add_handler(CommandHandler("solverstatus", status))
     application.add_handler(CommandHandler("autoon", auto_on))
     application.add_handler(CommandHandler("autooff", auto_off))
@@ -186,6 +187,15 @@ async def solve_all(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 @owner_only
+async def retry_pr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text("Usage: /retrypr 153")
+        return
+    message = await retry_draft_pr(str(update.effective_user.id), int(context.args[0]))
+    await update.message.reply_text(message)
+
+
+@owner_only
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = await _user(update)
     if not user:
@@ -241,6 +251,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/assigned - list assigned GrantFox issues\n"
         "/solve <issue URL> - solve one assigned issue\n"
         "/solveall - queue every assigned GrantFox issue\n"
+        "/retrypr <PR number> - retry a failed solver PR and reset repair counters\n"
         "/autoon and /autooff - control automatic discovery\n"
         "/solverstatus - job progress\n"
         "/pause and /resume - pause or resume new issues; drafts still monitor CI"

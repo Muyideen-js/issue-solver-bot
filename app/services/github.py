@@ -223,9 +223,29 @@ async def get_ci_status(token: str, repo: str, sha: str) -> str:
     return "none"
 
 
-async def get_ci_failure_details(token: str, repo: str, sha: str) -> str:
-    """Collect bounded check output and commit-status descriptions for repair prompts."""
+async def get_pr_changed_files(token: str, repo: str, pr_number: int) -> list[str]:
+    """Return every filename currently changed by a pull request."""
+    paths = []
     async with httpx.AsyncClient(timeout=45) as client:
+        for page in range(1, 31):
+            response = await client.get(
+                f"{GITHUB_API}/repos/{repo}/pulls/{pr_number}/files",
+                headers=_headers(token),
+                params={"per_page": 100, "page": page},
+            )
+            response.raise_for_status()
+            batch = response.json()
+            paths.extend(
+                item["filename"] for item in batch if isinstance(item.get("filename"), str)
+            )
+            if len(batch) < 100:
+                break
+    return paths
+
+
+async def get_ci_failure_details(token: str, repo: str, sha: str) -> str:
+    """Collect check output, annotations, and GitHub Actions logs for repair prompts."""
+    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
         checks, statuses = await asyncio.gather(
             client.get(
                 f"{GITHUB_API}/repos/{repo}/commits/{sha}/check-runs",
@@ -237,25 +257,77 @@ async def get_ci_failure_details(token: str, repo: str, sha: str) -> str:
                 headers=_headers(token),
             ),
         )
-    sections = []
-    if checks.status_code == 200:
-        for run in checks.json().get("check_runs", []):
-            if run.get("conclusion") in {
-                "failure", "cancelled", "timed_out", "action_required", "startup_failure"
-            }:
+        sections = []
+        if checks.status_code == 200:
+            for run in checks.json().get("check_runs", []):
+                if run.get("conclusion") not in {
+                    "failure", "cancelled", "timed_out", "action_required", "startup_failure"
+                }:
+                    continue
                 output = run.get("output") or {}
-                sections.append(
-                    f"CHECK: {run.get('name')}\n"
-                    f"Conclusion: {run.get('conclusion')}\n"
-                    f"Title: {output.get('title') or ''}\n"
-                    f"Summary: {output.get('summary') or ''}\n"
-                    f"Details: {output.get('text') or ''}"
-                )
-    if statuses.status_code == 200:
-        for status in statuses.json().get("statuses", []):
-            if status.get("state") in {"failure", "error"}:
-                sections.append(
-                    f"STATUS: {status.get('context')}\n"
-                    f"Description: {status.get('description') or ''}"
-                )
-    return "\n\n".join(sections)[:100_000] or "CI failed without inline diagnostics."
+                check_sections = [
+                    f"CHECK: {run.get('name')}",
+                    f"Conclusion: {run.get('conclusion')}",
+                    f"Title: {output.get('title') or ''}",
+                    f"Summary: {output.get('summary') or ''}",
+                    f"Details: {output.get('text') or ''}",
+                ]
+                check_id = run.get("id")
+                if check_id:
+                    try:
+                        annotations = await client.get(
+                            f"{GITHUB_API}/repos/{repo}/check-runs/{check_id}/annotations",
+                            headers=_headers(token),
+                            params={"per_page": 100},
+                        )
+                        if annotations.status_code == 200:
+                            rendered = [_format_annotation(item) for item in annotations.json()]
+                            if rendered:
+                                check_sections.append("Annotations:\n" + "\n".join(rendered))
+                    except (httpx.HTTPError, TypeError, ValueError):
+                        pass
+                job_id = _actions_job_id(run.get("details_url") or "")
+                if job_id:
+                    try:
+                        logs = await client.get(
+                            f"{GITHUB_API}/repos/{repo}/actions/jobs/{job_id}/logs",
+                            headers=_headers(token),
+                        )
+                        if logs.status_code == 200 and logs.text:
+                            check_sections.append(
+                                "GitHub Actions job log (failure tail):\n"
+                                + _tail_text(logs.text, 60_000)
+                            )
+                    except httpx.HTTPError:
+                        pass
+                sections.append("\n".join(check_sections))
+        if statuses.status_code == 200:
+            for status in statuses.json().get("statuses", []):
+                if status.get("state") in {"failure", "error"}:
+                    sections.append(
+                        f"STATUS: {status.get('context')}\n"
+                        f"Description: {status.get('description') or ''}"
+                    )
+    combined = "\n\n".join(sections)
+    return _tail_text(combined, 100_000) if combined else "CI failed without inline diagnostics."
+
+
+def _actions_job_id(details_url: str) -> int | None:
+    match = re.search(r"/job/(\d+)(?:[/?#]|$)", details_url)
+    return int(match.group(1)) if match else None
+
+
+def _format_annotation(annotation: dict) -> str:
+    location = annotation.get("path") or "unknown file"
+    if annotation.get("start_line"):
+        location += f":{annotation['start_line']}"
+    title = annotation.get("title") or annotation.get("annotation_level") or "diagnostic"
+    message = annotation.get("message") or ""
+    details = annotation.get("raw_details") or ""
+    return f"- {location} [{title}] {message} {details}".strip()[:4000]
+
+
+def _tail_text(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    return "[earlier log output omitted]\n" + value[-limit:]

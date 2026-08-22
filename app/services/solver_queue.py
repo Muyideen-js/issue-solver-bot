@@ -35,9 +35,7 @@ async def enqueue_issue(user: SolverUser, issue: dict) -> bool:
         existing = result.scalar_one_or_none()
         if existing:
             if existing.status == "FAILED":
-                existing.status = "QUEUED"
-                existing.next_attempt_at = datetime.utcnow()
-                existing.last_error = None
+                _reset_job_for_retry(existing, reason="Failed issue requeued")
                 await db.commit()
                 return True
             return False
@@ -63,6 +61,34 @@ async def discover_for_user(user: SolverUser) -> tuple[int, int]:
     for issue in issues:
         queued += int(await enqueue_issue(user, issue))
     return len(issues), queued
+
+
+async def retry_draft_pr(telegram_id: str, pr_number: int) -> str:
+    """Reset a stopped draft PR so CI can be evaluated and repaired again."""
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(IssueJob).where(
+                IssueJob.telegram_id == telegram_id,
+                IssueJob.draft_pr_number == pr_number,
+            )
+        )
+        jobs = result.scalars().all()
+        if not jobs:
+            return f"I cannot find solver PR #{pr_number}."
+        if len(jobs) > 1:
+            return f"More than one repository has solver PR #{pr_number}; retry by issue URL."
+        job = jobs[0]
+        if job.status in {"QUEUED", "WAITING_CI", "PROCESSING"}:
+            return f"PR #{pr_number} is already active ({job.status})."
+        if job.status == "DONE":
+            return f"PR #{pr_number} already passed CI and is complete."
+        if job.status not in {"FAILED", "NEEDS_TESTS"}:
+            return f"PR #{pr_number} stopped as {job.status}; it was not reset automatically."
+        _reset_job_for_retry(job)
+        await db.commit()
+        return (
+            f"PR #{pr_number} queued for a fresh CI check with automatic repair counters reset."
+        )
 
 
 async def assignment_poller(stop_event: asyncio.Event) -> None:
@@ -286,7 +312,11 @@ async def _process_existing_draft(job, user, token: str, issue: dict, db) -> Non
         )
         return
     failure_details = await gh.get_ci_failure_details(token, job.repo_full_name, current_sha)
-    previous_changes = _previous_changed_files(job.result_summary)
+    previous_paths = await gh.get_pr_changed_files(
+        token, job.repo_full_name, job.draft_pr_number
+    )
+    if not previous_paths:
+        previous_paths = _previous_changed_paths(job.result_summary)
     await notify(
         user.telegram_id,
         f"CI failed for issue #{job.issue_number}. Starting repair attempt "
@@ -300,16 +330,17 @@ async def _process_existing_draft(job, user, token: str, issue: dict, db) -> Non
             job.repo_full_name,
             job.issue_number,
             issue.get("title", ""),
-            (issue.get("body") or "")
-            + (f"\n\nPreviously changed files:\n{previous_changes}" if previous_changes else "")
-            + "\n\nThe previous implementation failed CI. Repair these failures:\n"
-            + failure_details,
+            issue.get("body") or "",
+            mode="repair",
+            focus_files=previous_paths,
+            ci_failure_details=failure_details,
         )
         new_sha = await workspace.commit_and_push(
             fork_url,
             job.branch_name,
             f"fix: repair CI for issue #{job.issue_number}",
         )
+    result["changed_files"] = list(dict.fromkeys(previous_paths + result["changed_files"]))
     job.repair_attempts += 1
     job.head_sha = new_sha
     job.result_summary = json.dumps(result)
@@ -403,10 +434,23 @@ def _pr_title(issue_title: str) -> str:
 
 
 def _previous_changed_files(result_summary: str | None) -> str:
+    return "\n".join(f"- {path}" for path in _previous_changed_paths(result_summary))
+
+
+def _previous_changed_paths(result_summary: str | None) -> list[str]:
     if not result_summary:
-        return ""
+        return []
     try:
         paths = json.loads(result_summary).get("changed_files", [])
     except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
-        return ""
-    return "\n".join(f"- {path}" for path in paths[:50] if isinstance(path, str))
+        return []
+    return [path for path in paths[:50] if isinstance(path, str)]
+
+
+def _reset_job_for_retry(job: IssueJob, reason: str = "Manual retry requested") -> None:
+    job.status = "WAITING_CI" if job.draft_pr_number else "QUEUED"
+    job.attempts = 0
+    job.repair_attempts = 0
+    job.ci_polls = 0
+    job.next_attempt_at = datetime.utcnow()
+    job.last_error = reason

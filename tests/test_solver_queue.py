@@ -2,6 +2,8 @@ from app.services.solver_queue import (
     _pr_body,
     _pr_title,
     _previous_changed_files,
+    _previous_changed_paths,
+    _reset_job_for_retry,
     _repo_from_issue,
 )
 
@@ -33,3 +35,20 @@ def test_previous_changed_files_are_recovered_for_ci_repair():
     summary = '{"changed_files":["src/app.ts","tests/app.test.ts"]}'
     assert _previous_changed_files(summary) == "- src/app.ts\n- tests/app.test.ts"
     assert _previous_changed_files("not-json") == ""
+    assert _previous_changed_paths(summary) == ["src/app.ts", "tests/app.test.ts"]
+
+
+def test_retry_reset_preserves_draft_but_resets_failure_counters():
+    job = type("Job", (), {})()
+    job.draft_pr_number = 153
+    job.status = "FAILED"
+    job.attempts = 3
+    job.repair_attempts = 2
+    job.ci_polls = 10
+    job.next_attempt_at = None
+    job.last_error = "failed"
+    _reset_job_for_retry(job)
+    assert job.status == "WAITING_CI"
+    assert job.attempts == 0
+    assert job.repair_attempts == 0
+    assert job.ci_polls == 0

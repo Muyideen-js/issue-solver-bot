@@ -28,3 +28,5 @@ def validate_settings() -> None:
         raise RuntimeError("ASSIGNMENT_POLL_SECONDS must be at least 60")
     if int(os.getenv("SOLVER_MAX_TURNS", "30")) < 1:
         raise RuntimeError("SOLVER_MAX_TURNS must be positive")
+    if int(os.getenv("SOLVER_REPAIR_MAX_TURNS", "16")) < 4:
+        raise RuntimeError("SOLVER_REPAIR_MAX_TURNS must be at least 4")
