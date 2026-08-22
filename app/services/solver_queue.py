@@ -6,7 +6,7 @@ import os
 import re
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.exc import IntegrityError
 
 from app.models.database import AsyncSessionLocal, IssueJob, SolverUser
@@ -112,7 +112,11 @@ async def _claim_next_job() -> int | None:
                 IssueJob.status.in_(["QUEUED", "WAITING_CI"]),
                 IssueJob.next_attempt_at <= datetime.utcnow(),
             )
-            .order_by(IssueJob.next_attempt_at, IssueJob.id)
+            .order_by(
+                case((IssueJob.draft_pr_number.is_not(None), 0), else_=1),
+                IssueJob.next_attempt_at,
+                IssueJob.id,
+            )
             .limit(1)
             .with_for_update(skip_locked=True)
         )
@@ -133,8 +137,12 @@ async def _process_job(job_id: int) -> None:
             select(SolverUser).where(SolverUser.telegram_id == job.telegram_id)
         )
         user = user_result.scalar_one_or_none()
-        if not user or user.paused:
-            await _reschedule(job, db, 300, "Solver is paused or user is missing")
+        if not user:
+            await _reschedule(job, db, 300, "Solver user is missing")
+            return
+        # Pause blocks new issues, but existing drafts must still be monitored and repaired.
+        if user.paused and not job.draft_pr_number:
+            await _reschedule(job, db, 300, "New issue solving is paused")
             return
         token = decrypt_token(user.github_token_encrypted)
         try:
@@ -158,6 +166,12 @@ async def _process_job(job_id: int) -> None:
                 await notify(
                     user.telegram_id,
                     f"Issue solver failed for {job.issue_url}:\n{str(exc)[:1000]}",
+                )
+            else:
+                await notify(
+                    user.telegram_id,
+                    f"Attempt {job.attempts} failed for {job.issue_url}. It remains queued "
+                    f"for retry.\n{str(exc)[:700]}",
                 )
 
 
@@ -206,7 +220,7 @@ async def _implement_issue(job, user, token: str, issue: dict, db) -> None:
         repo=job.repo_full_name,
         head=f"{user.github_username}:{branch}",
         base=base_branch,
-        title=f"fix: {issue.get('title', job.issue_title)}"[:240],
+        title=_pr_title(issue.get("title", job.issue_title)),
         body=pr_body,
     )
     await _attach_draft(job, pull_request, db)
@@ -268,6 +282,11 @@ async def _process_existing_draft(job, user, token: str, issue: dict, db) -> Non
         )
         return
     failure_details = await gh.get_ci_failure_details(token, job.repo_full_name, current_sha)
+    await notify(
+        user.telegram_id,
+        f"CI failed for issue #{job.issue_number}. Starting repair attempt "
+        f"{job.repair_attempts + 1}/{max_repairs}:\n{job.draft_pr_url}",
+    )
     fork_url = pull_request["head"]["repo"]["clone_url"]
     async with SolverWorkspace(token) as workspace:
         await workspace.clone_existing_branch(fork_url, job.branch_name)
@@ -290,6 +309,11 @@ async def _process_existing_draft(job, user, token: str, issue: dict, db) -> Non
     job.result_summary = json.dumps(result)
     job.ci_polls = 0
     await _reschedule(job, db, 60, "WAITING_CI_AFTER_REPAIR")
+    await notify(
+        user.telegram_id,
+        f"Repair commit pushed for issue #{job.issue_number}. Waiting for CI again:\n"
+        f"{job.draft_pr_url}",
+    )
 
 
 async def _retry_or_fail(job: IssueJob, db, error: str) -> None:
@@ -358,3 +382,15 @@ draft until repository CI passes.
 
 Closes #{job.issue_number}
 """
+
+
+def _pr_title(issue_title: str) -> str:
+    title = (issue_title or "Resolve assigned issue").strip()
+    title = re.sub(
+        r"^(?:fix|feat|chore|refactor|test|docs)(?:\([^)]*\))?:\s*",
+        "",
+        title,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    return f"fix: {title}"[:240]

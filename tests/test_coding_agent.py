@@ -92,3 +92,32 @@ def test_tool_output_is_bounded():
     bounded = coding_agent._bounded_tool_output(oversized)
     assert len(bounded) < len(oversized)
     assert bounded.endswith("...[output truncated; narrow the request]")
+
+
+@pytest.mark.asyncio
+async def test_agent_preserves_changed_draft_at_turn_limit(monkeypatch):
+    monkeypatch.setenv("SOLVER_MAX_TURNS", "1")
+
+    async def fake_request(messages):
+        return {
+            "content": None,
+            "tool_calls": [{
+                "id": "1",
+                "function": {
+                    "name": "replace_text",
+                    "arguments": (
+                        '{"path":"src/app.py","old_text":"old","new_text":"new",'
+                        '"expected_replacements":1}'
+                    ),
+                },
+            }],
+        }
+
+    monkeypatch.setattr(coding_agent, "_request_agent", fake_request)
+    workspace = FakeWorkspace()
+    result = await coding_agent.solve_issue(
+        workspace, "owner/repo", 9, "Fix it", "Requirements"
+    )
+    assert result["budget_exhausted"] is True
+    assert result["changed_files"] == ["src/app.py"]
+    assert workspace.diff_seen is True

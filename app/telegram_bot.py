@@ -219,7 +219,14 @@ async def auto_off(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 @owner_only
 async def pause(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _set_flag(update, paused=True, message="Solver paused. Existing draft PRs are preserved.")
+    await _set_flag(
+        update,
+        paused=True,
+        message=(
+            "New issue solving paused. Existing draft PRs will still be monitored and "
+            "repaired when CI fails."
+        ),
+    )
 
 
 @owner_only
@@ -236,7 +243,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/solveall - queue every assigned GrantFox issue\n"
         "/autoon and /autooff - control automatic discovery\n"
         "/solverstatus - job progress\n"
-        "/pause and /resume - control the worker"
+        "/pause and /resume - pause or resume new issues; drafts still monitor CI"
     )
 
 

@@ -37,6 +37,11 @@ The service never executes downloaded repository code while it holds GitHub or
 DeepSeek credentials. This is intentional: generated and third-party repository
 code must not share a process environment with long-lived secrets.
 
+Failed draft PR checks are prioritized ahead of newly queued issues. If the AI
+turn budget ends after producing code changes, those changes are preserved in a
+draft PR for CI validation instead of being discarded. HTTP client request logs
+are suppressed because Telegram embeds the bot credential in request URLs.
+
 Every Telegram command is restricted to `TELEGRAM_OWNER_ID`, so another user
 cannot consume the shared DeepSeek balance.
 
@@ -48,7 +53,8 @@ cannot consume the shared DeepSeek balance.
 - `/solveall` — queue all assigned GrantFox issues
 - `/autoon` and `/autooff` — control five-minute automatic discovery
 - `/solverstatus` — show durable job states
-- `/pause` and `/resume` — pause or resume the worker
+- `/pause` and `/resume` — pause or resume new issue implementations; existing
+  draft PRs continue CI monitoring and automatic repair
 - `/help`
 
 ## Environment
