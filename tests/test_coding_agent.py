@@ -114,6 +114,26 @@ def test_old_tool_outputs_are_compacted_to_context_budget():
     )
 
 
+def test_empty_tool_calls_are_omitted_from_assistant_history():
+    history = coding_agent._assistant_history_message({
+        "content": "I need to inspect another file.",
+        "tool_calls": [],
+    })
+    assert history == {
+        "role": "assistant",
+        "content": "I need to inspect another file.",
+    }
+
+
+def test_nonempty_tool_calls_are_preserved_in_assistant_history():
+    tool_calls = [{"id": "call-1", "function": {"name": "list_files"}}]
+    history = coding_agent._assistant_history_message({
+        "content": None,
+        "tool_calls": tool_calls,
+    })
+    assert history["tool_calls"] == tool_calls
+
+
 @pytest.mark.asyncio
 async def test_agent_preserves_changed_draft_at_turn_limit(monkeypatch):
     monkeypatch.setenv("SOLVER_MAX_TURNS", "1")
