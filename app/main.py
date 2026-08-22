@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 
 from app.config import validate_settings
 from app.models.database import init_db
@@ -57,6 +57,12 @@ app = FastAPI(title="GrantFox Issue Solver", lifespan=lifespan)
 @app.get("/")
 async def root():
     return {"service": "grantfox-issue-solver", "status": "running"}
+
+
+@app.head("/", status_code=204)
+async def root_head():
+    """Support free uptime monitors that are restricted to lightweight HEAD checks."""
+    return Response(status_code=204)
 
 
 @app.get("/health")

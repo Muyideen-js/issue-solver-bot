@@ -107,3 +107,5 @@ Create a separate Render web service and PostgreSQL database for this project.
 Set the environment values above, use `pip install -r requirements.txt` as the
 build command, and use the included `Procfile` start command. Run exactly one
 instance because Telegram long polling and the durable worker are single-instance.
+The root URL supports both `GET` and lightweight `HEAD` requests so free uptime
+monitors can check the service without downloading a response body.
