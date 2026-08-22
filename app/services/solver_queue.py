@@ -263,8 +263,12 @@ async def _process_existing_draft(job, user, token: str, issue: dict, db) -> Non
             )
         return
     if ci_status == "success":
-        await gh.mark_pr_ready(token, pull_request["node_id"])
-        await _finish(job, db, "DONE", "CI passed; PR marked ready for review")
+        if pull_request.get("draft", False):
+            await gh.mark_pr_ready(token, pull_request["node_id"])
+            detail = "CI passed; PR marked ready for review"
+        else:
+            detail = "CI passed; PR was already ready for review"
+        await _finish(job, db, "DONE", detail)
         await notify(
             user.telegram_id,
             f"Solved issue #{job.issue_number}. CI passed and the PR is ready:\n"
