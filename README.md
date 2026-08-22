@@ -1,0 +1,92 @@
+# GrantFox Issue Solver Bot
+
+A separate Telegram-controlled coding agent that discovers open GitHub issues
+assigned to the connected contributor and labeled `GrantFox OSS`, implements
+them with DeepSeek, pushes branches to the contributor's fork, and creates draft
+pull requests. Drafts become ready for review only after repository CI passes.
+
+## How assignment detection works
+
+`/setup` validates the stored GitHub token through `GET /user`; the returned
+login is the source of truth. The bot searches GitHub for:
+
+```text
+is:issue is:open assignee:<connected-login> label:"GrantFox OSS"
+```
+
+It rechecks the issue immediately before coding. An issue removed from the user
+or closed before work starts is skipped. This search spans every participating
+repository, not just repositories owned by GrantChain.
+
+## Solver lifecycle
+
+1. Discover or manually queue an assigned issue.
+2. Clone the upstream default branch into a temporary workspace.
+3. Let DeepSeek inspect, search, and edit repository files through restricted
+   tools. The model cannot run shell commands.
+4. Refuse workflow, credential-file, path-traversal, and oversized-file edits.
+5. Push the commit to a branch in the connected user's personal fork.
+6. Open a draft PR containing `Closes #N`, the summary, changed files, and test
+   plan.
+7. Use the upstream repository's CI as the execution boundary. If CI fails,
+   supply its diagnostics to DeepSeek for up to two repair commits.
+8. Mark the PR ready for review only after CI succeeds. If no CI appears, keep
+   the PR draft and notify the user.
+
+The service never executes downloaded repository code while it holds GitHub or
+DeepSeek credentials. This is intentional: generated and third-party repository
+code must not share a process environment with long-lived secrets.
+
+Every Telegram command is restricted to `TELEGRAM_OWNER_ID`, so another user
+cannot consume the shared DeepSeek balance.
+
+## Telegram commands
+
+- `/setup` — connect or rotate the GitHub token
+- `/assigned` — list open assigned GrantFox issues
+- `/solve <issue-url>` — queue one assigned issue
+- `/solveall` — queue all assigned GrantFox issues
+- `/autoon` and `/autooff` — control five-minute automatic discovery
+- `/solverstatus` — show durable job states
+- `/pause` and `/resume` — pause or resume the worker
+- `/help`
+
+## Environment
+
+Copy `.env.example` to `.env` locally. Never commit `.env`.
+
+```env
+TELEGRAM_SOLVER_BOT_TOKEN=...
+TELEGRAM_OWNER_ID=123456789
+ENCRYPTION_KEY=...
+DEEPSEEK_API_KEY=...
+DEEPSEEK_MODEL=deepseek-v4-flash
+GRANTFOX_LABEL=GrantFox OSS
+ASSIGNMENT_POLL_SECONDS=300
+SOLVER_MAX_TURNS=30
+SOLVER_MAX_REPAIR_ATTEMPTS=2
+DATABASE_URL=postgresql://user:password@host/database
+```
+
+The GitHub token needs issue/metadata read access, permission to create and push
+branches in the user's fork, and pull-request write access on target repositories.
+A numeric `TELEGRAM_OWNER_ID` makes every command private to one Telegram account.
+You can obtain your numeric ID from Telegram's `@userinfobot`; do not use your
+`@username` in this setting.
+A GitHub App with short-lived credentials is preferable for a later multi-user
+production release; this first version encrypts the contributor PAT at rest.
+
+## Local verification
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest -q
+uvicorn app.main:app --reload --port 8010
+```
+
+## Render
+
+Create a separate Render web service and PostgreSQL database for this project.
+Set the environment values above, use `pip install -r requirements.txt` as the
+build command, and use the included `Procfile` start command. Run exactly one
+instance because Telegram long polling and the durable worker are single-instance.
