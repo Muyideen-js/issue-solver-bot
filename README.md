@@ -59,6 +59,7 @@ cannot consume the shared DeepSeek balance.
 - `/solve <issue-url>` — queue one assigned issue
 - `/solveall` — queue all assigned GrantFox issues
 - `/retrypr <PR-number>` — retry a stopped solver PR and reset its repair counters
+  while explicitly adopting any manual fixes already pushed to that PR branch
 - `/autoon` and `/autooff` — control five-minute automatic discovery
 - `/solverstatus` — show durable job states
 - `/pause` and `/resume` — pause or resume new issue implementations; existing

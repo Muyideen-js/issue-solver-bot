@@ -47,6 +47,7 @@ def test_retry_reset_preserves_draft_but_resets_failure_counters():
     job.attempts = 3
     job.repair_attempts = 2
     job.ci_polls = 10
+    job.head_sha = "old-sha"
     job.next_attempt_at = None
     job.last_error = "failed"
     _reset_job_for_retry(job)
@@ -54,6 +55,7 @@ def test_retry_reset_preserves_draft_but_resets_failure_counters():
     assert job.attempts == 0
     assert job.repair_attempts == 0
     assert job.ci_polls == 0
+    assert job.head_sha is None
 
 
 def test_ci_failure_fingerprint_is_stable_across_log_prefixes():

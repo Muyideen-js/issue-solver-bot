@@ -495,5 +495,8 @@ def _reset_job_for_retry(job: IssueJob, reason: str = "Manual retry requested") 
     job.attempts = 0
     job.repair_attempts = 0
     job.ci_polls = 0
+    if job.draft_pr_number:
+        # An explicit retry authorizes adopting the PR's current head after a user/manual fix.
+        job.head_sha = None
     job.next_attempt_at = datetime.utcnow()
     job.last_error = reason
