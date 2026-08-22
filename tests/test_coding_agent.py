@@ -94,6 +94,26 @@ def test_tool_output_is_bounded():
     assert bounded.endswith("...[output truncated; narrow the request]")
 
 
+def test_old_tool_outputs_are_compacted_to_context_budget():
+    messages = [
+        {"role": "tool", "content": str(index) * 12_000}
+        for index in range(8)
+    ]
+    coding_agent._compact_tool_history(messages)
+    retained = [
+        message["content"]
+        for message in messages
+        if not message["content"].startswith(coding_agent.COMPACTED_TOOL_PREFIX)
+    ]
+    assert sum(len(content) for content in retained) <= (
+        coding_agent.MAX_RETAINED_TOOL_OUTPUT_CHARS
+    )
+    assert any(
+        message["content"].startswith(coding_agent.COMPACTED_TOOL_PREFIX)
+        for message in messages
+    )
+
+
 @pytest.mark.asyncio
 async def test_agent_preserves_changed_draft_at_turn_limit(monkeypatch):
     monkeypatch.setenv("SOLVER_MAX_TURNS", "1")

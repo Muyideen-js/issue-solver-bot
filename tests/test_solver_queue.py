@@ -1,4 +1,9 @@
-from app.services.solver_queue import _pr_body, _pr_title, _repo_from_issue
+from app.services.solver_queue import (
+    _pr_body,
+    _pr_title,
+    _previous_changed_files,
+    _repo_from_issue,
+)
 
 
 def test_repo_is_extracted_from_search_result():
@@ -22,3 +27,9 @@ def test_pr_title_does_not_duplicate_conventional_prefix():
     assert _pr_title("fix: align amount units") == "fix: align amount units"
     assert _pr_title("feat(api): add validation") == "fix: add validation"
     assert _pr_title("Handle empty values") == "fix: Handle empty values"
+
+
+def test_previous_changed_files_are_recovered_for_ci_repair():
+    summary = '{"changed_files":["src/app.ts","tests/app.test.ts"]}'
+    assert _previous_changed_files(summary) == "- src/app.ts\n- tests/app.test.ts"
+    assert _previous_changed_files("not-json") == ""

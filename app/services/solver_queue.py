@@ -282,6 +282,7 @@ async def _process_existing_draft(job, user, token: str, issue: dict, db) -> Non
         )
         return
     failure_details = await gh.get_ci_failure_details(token, job.repo_full_name, current_sha)
+    previous_changes = _previous_changed_files(job.result_summary)
     await notify(
         user.telegram_id,
         f"CI failed for issue #{job.issue_number}. Starting repair attempt "
@@ -296,6 +297,7 @@ async def _process_existing_draft(job, user, token: str, issue: dict, db) -> Non
             job.issue_number,
             issue.get("title", ""),
             (issue.get("body") or "")
+            + (f"\n\nPreviously changed files:\n{previous_changes}" if previous_changes else "")
             + "\n\nThe previous implementation failed CI. Repair these failures:\n"
             + failure_details,
         )
@@ -394,3 +396,13 @@ def _pr_title(issue_title: str) -> str:
         flags=re.IGNORECASE,
     )
     return f"fix: {title}"[:240]
+
+
+def _previous_changed_files(result_summary: str | None) -> str:
+    if not result_summary:
+        return ""
+    try:
+        paths = json.loads(result_summary).get("changed_files", [])
+    except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+        return ""
+    return "\n".join(f"- {path}" for path in paths[:50] if isinstance(path, str))
