@@ -1,5 +1,6 @@
 """Durable assignment discovery and issue-solving worker."""
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -312,11 +313,18 @@ async def _process_existing_draft(job, user, token: str, issue: dict, db) -> Non
         )
         return
     failure_details = await gh.get_ci_failure_details(token, job.repo_full_name, current_sha)
+    previous_result = _previous_result(job.result_summary)
+    failure_fingerprint = _ci_failure_fingerprint(failure_details)
+    repeated_failure = (
+        bool(failure_fingerprint)
+        and previous_result.get("ci_failure_fingerprint") == failure_fingerprint
+    )
     previous_paths = await gh.get_pr_changed_files(
         token, job.repo_full_name, job.draft_pr_number
     )
     if not previous_paths:
         previous_paths = _previous_changed_paths(job.result_summary)
+    previous_paths = _prioritize_failure_paths(previous_paths, failure_details)
     await notify(
         user.telegram_id,
         f"CI failed for issue #{job.issue_number}. Starting repair attempt "
@@ -334,6 +342,7 @@ async def _process_existing_draft(job, user, token: str, issue: dict, db) -> Non
             mode="repair",
             focus_files=previous_paths,
             ci_failure_details=failure_details,
+            repeated_ci_failure=repeated_failure,
         )
         new_sha = await workspace.commit_and_push(
             fork_url,
@@ -341,6 +350,7 @@ async def _process_existing_draft(job, user, token: str, issue: dict, db) -> Non
             f"fix: repair CI for issue #{job.issue_number}",
         )
     result["changed_files"] = list(dict.fromkeys(previous_paths + result["changed_files"]))
+    result["ci_failure_fingerprint"] = failure_fingerprint
     job.repair_attempts += 1
     job.head_sha = new_sha
     job.result_summary = json.dumps(result)
@@ -438,13 +448,46 @@ def _previous_changed_files(result_summary: str | None) -> str:
 
 
 def _previous_changed_paths(result_summary: str | None) -> list[str]:
-    if not result_summary:
-        return []
-    try:
-        paths = json.loads(result_summary).get("changed_files", [])
-    except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
-        return []
+    paths = _previous_result(result_summary).get("changed_files", [])
     return [path for path in paths[:50] if isinstance(path, str)]
+
+
+def _previous_result(result_summary: str | None) -> dict:
+    if not result_summary:
+        return {}
+    try:
+        result = json.loads(result_summary)
+    except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return result if isinstance(result, dict) else {}
+
+
+def _ci_failure_fingerprint(details: str) -> str:
+    diagnostic_lines = []
+    for line in (details or "").splitlines():
+        clean = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+        lowered = clean.lower()
+        if "##[error]" in lowered or re.search(r"\berror\s+(?:ts|[a-z]\d{3,})", lowered):
+            clean = re.sub(r"^.*?(##\[error\])", r"\1", clean)
+            diagnostic_lines.append(clean[-1200:])
+    if not diagnostic_lines:
+        return ""
+    value = "\n".join(dict.fromkeys(diagnostic_lines[:20]))
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _prioritize_failure_paths(paths: list[str], details: str) -> list[str]:
+    """Put files named by the compiler first so their contents survive context bounds."""
+    normalized_details = (details or "").replace("\\", "/")
+    scored = []
+    for index, path in enumerate(paths):
+        normalized = path.replace("\\", "/")
+        suffixes = [normalized]
+        parts = normalized.split("/")
+        suffixes.extend("/".join(parts[start:]) for start in range(1, len(parts)))
+        mentioned = any(suffix and suffix in normalized_details for suffix in suffixes)
+        scored.append((0 if mentioned else 1, index, path))
+    return [path for _, _, path in sorted(scored)]
 
 
 def _reset_job_for_retry(job: IssueJob, reason: str = "Manual retry requested") -> None:

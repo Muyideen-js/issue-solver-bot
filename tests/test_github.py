@@ -144,3 +144,41 @@ async def test_pr_changed_files_are_loaded_for_repair(monkeypatch):
     monkeypatch.setattr(github.httpx, "AsyncClient", lambda **kwargs: PullFilesClient())
     paths = await github.get_pr_changed_files("token", "owner/repo", 153)
     assert paths == ["src/app.ts", "tests/app.test.ts"]
+
+
+class CiStatusClient:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
+    async def get(self, url, headers, params=None):
+        if url.endswith("/check-runs"):
+            return FakeResponse({
+                "check_runs": [{"status": "completed", "conclusion": "success"}]
+            })
+        if url.endswith("/status"):
+            return FakeResponse({
+                "state": "failure",
+                "statuses": [{
+                    "context": "Vercel",
+                    "state": "failure",
+                    "description": "Authorization required to deploy.",
+                }],
+            })
+        raise AssertionError(f"Unexpected URL: {url}")
+
+
+@pytest.mark.asyncio
+async def test_vercel_authorization_failure_does_not_block_passing_code_ci(monkeypatch):
+    monkeypatch.setattr(github.httpx, "AsyncClient", lambda **kwargs: CiStatusClient())
+    assert await github.get_ci_status("token", "owner/repo", "abc") == "success"
+
+
+def test_real_vercel_build_failure_is_not_ignored():
+    assert github._is_noncode_authorization_failure({
+        "context": "Vercel",
+        "state": "failure",
+        "description": "Build failed",
+    }) is False

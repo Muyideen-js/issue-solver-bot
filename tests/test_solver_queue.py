@@ -3,6 +3,8 @@ from app.services.solver_queue import (
     _pr_title,
     _previous_changed_files,
     _previous_changed_paths,
+    _ci_failure_fingerprint,
+    _prioritize_failure_paths,
     _reset_job_for_retry,
     _repo_from_issue,
 )
@@ -52,3 +54,15 @@ def test_retry_reset_preserves_draft_but_resets_failure_counters():
     assert job.attempts == 0
     assert job.repair_attempts == 0
     assert job.ci_polls == 0
+
+
+def test_ci_failure_fingerprint_is_stable_across_log_prefixes():
+    first = "step 2026-01-01 ##[error]src/app.ts(84,22): error TS2352: bad cast"
+    second = "new-prefix ##[error]src/app.ts(84,22): error TS2352: bad cast"
+    assert _ci_failure_fingerprint(first) == _ci_failure_fingerprint(second)
+
+
+def test_compiler_named_file_is_preloaded_first():
+    paths = ["apps/web/src/other.ts", "apps/web/src/components/OffRampSelector.test.tsx"]
+    details = "src/components/OffRampSelector.test.tsx(84,22): error TS2352"
+    assert _prioritize_failure_paths(paths, details)[0].endswith("OffRampSelector.test.tsx")

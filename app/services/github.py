@@ -209,16 +209,20 @@ async def get_ci_status(token: str, repo: str, sha: str) -> str:
         )
     runs = checks.json().get("check_runs", []) if checks.status_code == 200 else []
     status_data = statuses.json() if statuses.status_code == 200 else {}
+    commit_statuses = [
+        status for status in status_data.get("statuses", [])
+        if not _is_noncode_authorization_failure(status)
+    ]
     if any(run.get("status") != "completed" for run in runs):
         return "pending"
     failed = {"failure", "cancelled", "timed_out", "action_required", "startup_failure"}
     if any(run.get("conclusion") in failed for run in runs):
         return "failure"
-    if status_data.get("state") in {"failure", "error"}:
+    if any(status.get("state") in {"failure", "error"} for status in commit_statuses):
         return "failure"
-    if status_data.get("state") == "pending":
+    if any(status.get("state") == "pending" for status in commit_statuses):
         return "pending"
-    if runs or status_data.get("state") == "success":
+    if runs or any(status.get("state") == "success" for status in commit_statuses):
         return "success"
     return "none"
 
@@ -303,7 +307,10 @@ async def get_ci_failure_details(token: str, repo: str, sha: str) -> str:
                 sections.append("\n".join(check_sections))
         if statuses.status_code == 200:
             for status in statuses.json().get("statuses", []):
-                if status.get("state") in {"failure", "error"}:
+                if (
+                    status.get("state") in {"failure", "error"}
+                    and not _is_noncode_authorization_failure(status)
+                ):
                     sections.append(
                         f"STATUS: {status.get('context')}\n"
                         f"Description: {status.get('description') or ''}"
@@ -315,6 +322,21 @@ async def get_ci_failure_details(token: str, repo: str, sha: str) -> str:
 def _actions_job_id(details_url: str) -> int | None:
     match = re.search(r"/job/(\d+)(?:[/?#]|$)", details_url)
     return int(match.group(1)) if match else None
+
+
+def _is_noncode_authorization_failure(status: dict) -> bool:
+    """Ignore deployment statuses that cannot be repaired by changing source code."""
+    if status.get("state") not in {"failure", "error"}:
+        return False
+    context = (status.get("context") or "").lower()
+    description = (status.get("description") or "").lower()
+    return (
+        context == "vercel"
+        and any(
+            phrase in description
+            for phrase in ("authorization required", "authorisation required", "not authorized")
+        )
+    )
 
 
 def _format_annotation(annotation: dict) -> str:

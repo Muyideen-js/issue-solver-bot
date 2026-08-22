@@ -213,11 +213,27 @@ async def test_repair_mode_preloads_changed_files_and_ci_details(monkeypatch):
         "Requirements",
         mode="repair",
         focus_files=["src/app.py"],
-        ci_failure_details="TypeScript error on line 1",
+        ci_failure_details=(
+            "##[error]src/app.py(1,2): error TS2352: unsafe tuple conversion"
+        ),
+        repeated_ci_failure=True,
     )
     first_prompt = requests[0][0][1]["content"]
     first_tool_names = {item["function"]["name"] for item in requests[0][1]}
     assert "1: old = True" in first_prompt
-    assert "TypeScript error on line 1" in first_prompt
+    assert "error TS2352" in first_prompt
+    assert "Exact compiler/test diagnostics" in first_prompt
+    assert "previous repair did not clear" in requests[0][0][0]["content"]
     assert "list_files" not in first_tool_names
     assert result["summary"] == "fixed CI"
+
+
+def test_exact_diagnostics_extracts_compiler_errors_from_action_log():
+    details = (
+        "2026-01-01 normal output\n"
+        "job Type-check ##[error]src/app.ts(84,22): error TS2352: bad cast\n"
+        "Process completed with exit code 2"
+    )
+    extracted = coding_agent._extract_exact_diagnostics(details)
+    assert "src/app.ts(84,22)" in extracted
+    assert "normal output" not in extracted

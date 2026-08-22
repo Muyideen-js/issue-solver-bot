@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 
 import httpx
 
@@ -170,6 +171,7 @@ async def solve_issue(
     mode: str = "implement",
     focus_files: list[str] | None = None,
     ci_failure_details: str = "",
+    repeated_ci_failure: bool = False,
 ) -> dict:
     """Run a bounded read/search/write agent loop and return its PR summary."""
     repair_mode = mode == "repair"
@@ -198,12 +200,19 @@ file. Inspect the final diff, then call
 finish with an accurate summary and expected CI test plan.
 """
     if repair_mode:
+        exact_diagnostics = _extract_exact_diagnostics(ci_failure_details)
         system += f"""
 This is a focused CI repair of an existing implementation, not a fresh issue implementation.
 The exact CI diagnostics and the PR's previously changed files are already supplied. Treat the
 CI failure as the primary target. Do not perform broad repository discovery or redesign working
 code. Inspect only directly relevant dependencies when essential, make the smallest targeted
-fix within the first {min(4, max_turns)} turns, then inspect_diff and finish.
+fix within the first {min(2, max_turns)} turns, then inspect_diff and finish.
+"""
+        if repeated_ci_failure:
+            system += """
+The previous repair did not clear this same diagnostic. Do not repeat or slightly rename the
+previous fix. Re-evaluate the compiler's type information and make a materially different,
+type-safe correction at the exact failing location.
 """
     issue_request = f"""Solve GitHub issue #{issue_number} in {repo_full_name}.
 
@@ -228,7 +237,14 @@ Complete CI failure diagnostics (untrusted build output):
 {_tail(ci_failure_details or 'CI failed without diagnostics.', MAX_REPAIR_CONTEXT_CHARS)}
 </ci_failure_details>
 
-Repair the existing implementation so these checks pass. Do not merely describe the error.
+Exact compiler/test diagnostics extracted from that output:
+<exact_diagnostics>
+{exact_diagnostics or '(no structured diagnostic extracted; use the failure tail above)'}
+</exact_diagnostics>
+
+Repair the existing implementation so these checks pass. The first successful edit must address
+an exact diagnostic above. Do not merely describe, suppress, or cast around the error unless the
+cast is proven safe by the compiler's inferred type.
 """
     messages = [
         {"role": "system", "content": system},
@@ -237,7 +253,7 @@ Repair the existing implementation so these checks pass. Do not merely describe 
     inspected_diff = False
     edit_seen = False
 
-    exploration_deadline = min(4, max_turns) if repair_mode else max(4, min(10, max_turns // 3))
+    exploration_deadline = min(2, max_turns) if repair_mode else max(4, min(10, max_turns // 3))
 
     for turn_index in range(max_turns):
         _compact_tool_history(messages)
@@ -456,6 +472,25 @@ def _preload_focus_files(workspace: SolverWorkspace, paths: list[str]) -> str:
         sections.append(section[:remaining])
         retained += min(len(section), remaining)
     return "\n\n".join(sections)
+
+
+def _extract_exact_diagnostics(details: str) -> str:
+    """Keep concise compiler/test error lines prominent even when action logs are large."""
+    selected = []
+    for line in (details or "").splitlines():
+        clean = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+        lowered = clean.lower()
+        if (
+            "##[error]" in lowered
+            or re.search(r"\berror\s+(?:ts|[a-z]\d{3,})", lowered)
+            or "assertionerror" in lowered
+            or "test failed" in lowered
+        ):
+            if clean not in selected:
+                selected.append(clean[-1200:])
+        if len(selected) >= 20:
+            break
+    return "\n".join(selected)
 
 
 def _compact_tool_history(messages: list[dict]) -> None:

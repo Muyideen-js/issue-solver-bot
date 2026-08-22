@@ -43,6 +43,12 @@ turn budget ends after producing code changes, those changes are preserved in a
 draft PR for CI validation instead of being discarded. HTTP client request logs
 are suppressed because Telegram embeds the bot credential in request URLs.
 
+Repair prompts promote exact compiler diagnostics and their named files ahead
+of general context. Repeated failures are fingerprinted so the agent is told to
+use a materially different correction. A Vercel `Authorization required to
+deploy` status is treated as repository configuration—not a source-code failure—
+and does not block a successful GitHub Actions result.
+
 Every Telegram command is restricted to `TELEGRAM_OWNER_ID`, so another user
 cannot consume the shared DeepSeek balance.
 
