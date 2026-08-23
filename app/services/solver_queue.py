@@ -65,7 +65,7 @@ async def discover_for_user(user: SolverUser) -> tuple[int, int]:
 
 
 async def retry_draft_pr(telegram_id: str, pr_number: int) -> str:
-    """Reset a stopped draft PR so CI can be evaluated and repaired again."""
+    """Reset a stopped solver PR so its current head and CI can be checked again."""
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(IssueJob).where(
@@ -82,7 +82,31 @@ async def retry_draft_pr(telegram_id: str, pr_number: int) -> str:
         if job.status in {"QUEUED", "WAITING_CI", "PROCESSING"}:
             return f"PR #{pr_number} is already active ({job.status})."
         if job.status == "DONE":
-            return f"PR #{pr_number} already passed CI and is complete."
+            user_result = await db.execute(
+                select(SolverUser).where(SolverUser.telegram_id == telegram_id)
+            )
+            user = user_result.scalar_one_or_none()
+            if not user:
+                return "Run /setup again before retrying this PR."
+            token = decrypt_token(user.github_token_encrypted)
+            pull_request = await gh.get_pr(token, job.repo_full_name, pr_number)
+            if pull_request.get("state") != "open":
+                return f"PR #{pr_number} is no longer open."
+            current_sha = pull_request["head"]["sha"]
+            ci_status = await gh.get_ci_status(token, job.repo_full_name, current_sha)
+            if not _completed_pr_needs_retry(job.head_sha, current_sha, ci_status):
+                return f"PR #{pr_number} already passed CI and is complete."
+            reason = (
+                "Manual retry requested after the PR head changed"
+                if current_sha != job.head_sha
+                else f"Manual retry requested because current CI is {ci_status}"
+            )
+            _reset_job_for_retry(job, reason=reason)
+            await db.commit()
+            return (
+                f"PR #{pr_number} changed after completion or no longer passes CI; "
+                "queued a fresh CI check with repair counters reset."
+            )
         if job.status not in {"FAILED", "NEEDS_TESTS"}:
             return f"PR #{pr_number} stopped as {job.status}; it was not reset automatically."
         _reset_job_for_retry(job)
@@ -500,3 +524,10 @@ def _reset_job_for_retry(job: IssueJob, reason: str = "Manual retry requested") 
         job.head_sha = None
     job.next_attempt_at = datetime.utcnow()
     job.last_error = reason
+
+
+def _completed_pr_needs_retry(
+    recorded_sha: str | None, current_sha: str, ci_status: str
+) -> bool:
+    """Return true when a formerly successful PR needs fresh CI processing."""
+    return current_sha != recorded_sha or ci_status != "success"

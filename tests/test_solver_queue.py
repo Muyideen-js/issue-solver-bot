@@ -4,6 +4,7 @@ from app.services.solver_queue import (
     _previous_changed_files,
     _previous_changed_paths,
     _ci_failure_fingerprint,
+    _completed_pr_needs_retry,
     _prioritize_failure_paths,
     _reset_job_for_retry,
     _repo_from_issue,
@@ -56,6 +57,32 @@ def test_retry_reset_preserves_draft_but_resets_failure_counters():
     assert job.repair_attempts == 0
     assert job.ci_polls == 0
     assert job.head_sha is None
+
+
+def test_retry_reset_can_reopen_a_completed_pr_after_its_head_changes():
+    job = type("Job", (), {})()
+    job.draft_pr_number = 154
+    job.status = "DONE"
+    job.attempts = 0
+    job.repair_attempts = 2
+    job.ci_polls = 0
+    job.head_sha = "previous-successful-sha"
+    job.next_attempt_at = None
+    job.last_error = "CI passed; PR marked ready for review"
+
+    _reset_job_for_retry(job, reason="PR head changed after completion")
+
+    assert job.status == "WAITING_CI"
+    assert job.repair_attempts == 0
+    assert job.head_sha is None
+    assert job.last_error == "PR head changed after completion"
+
+
+def test_completed_pr_is_retried_when_head_changed_or_ci_failed():
+    assert _completed_pr_needs_retry("old-sha", "new-sha", "success") is True
+    assert _completed_pr_needs_retry("same-sha", "same-sha", "failure") is True
+    assert _completed_pr_needs_retry("same-sha", "same-sha", "pending") is True
+    assert _completed_pr_needs_retry("same-sha", "same-sha", "success") is False
 
 
 def test_ci_failure_fingerprint_is_stable_across_log_prefixes():
