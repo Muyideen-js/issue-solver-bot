@@ -9,7 +9,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import FastAPI, Response
+from fastapi.staticfiles import StaticFiles
 
+from app import dashboard
 from app.config import validate_settings
 from app.models.database import init_db
 from app.services.solver_queue import assignment_poller, solver_worker
@@ -38,7 +40,7 @@ async def lifespan(app: FastAPI):
     poller_task = asyncio.create_task(assignment_poller(stop_event), name="assignment-poller")
     app.state.telegram = telegram
     app.state.stop_event = stop_event
-    logger.info("GrantFox issue solver started")
+    logger.info("Issue solver bot started")
     try:
         yield
     finally:
@@ -51,12 +53,18 @@ async def lifespan(app: FastAPI):
         await telegram.shutdown()
 
 
-app = FastAPI(title="GrantFox Issue Solver", lifespan=lifespan)
+app = FastAPI(title="Issue Solver Bot", lifespan=lifespan)
+app.include_router(dashboard.router)
+app.mount(
+    "/dashboard/assets",
+    StaticFiles(directory=dashboard.STATIC_DIR / "assets"),
+    name="dashboard-assets",
+)
 
 
 @app.get("/")
 async def root():
-    return {"service": "grantfox-issue-solver", "status": "running"}
+    return {"service": "issue-solver-bot", "status": "running"}
 
 
 @app.head("/", status_code=204)

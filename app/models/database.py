@@ -5,6 +5,7 @@ from datetime import datetime
 from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text, UniqueConstraint
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 
 def _database_url() -> str:
@@ -16,9 +17,19 @@ def _database_url() -> str:
     return url
 
 
-engine = create_async_engine(_database_url(), echo=False)
+def _engine_kwargs(url: str) -> dict:
+    # An in-memory SQLite DB (used by tests) is per-connection; StaticPool keeps
+    # every session on the same connection so data doesn't vanish between them.
+    if ":memory:" in url:
+        return {"poolclass": StaticPool, "connect_args": {"check_same_thread": False}}
+    return {}
+
+
+engine = create_async_engine(_database_url(), echo=False, **_engine_kwargs(_database_url()))
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 Base = declarative_base()
+
+DASHBOARD_ID_PREFIX = "dash:"
 
 
 class SolverUser(Base):
@@ -65,3 +76,8 @@ class IssueJob(Base):
 async def init_db() -> None:
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
+
+
+def is_dashboard_user(user: SolverUser) -> bool:
+    """Dashboard-added accounts carry a synthetic telegram_id, not a real Telegram ID."""
+    return user.telegram_id.startswith(DASHBOARD_ID_PREFIX)

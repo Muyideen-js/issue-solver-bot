@@ -63,10 +63,11 @@ def build_application(token: str) -> Application:
 
 @owner_only
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    programs = ", ".join(gh.configured_program_labels())
     await update.message.reply_text(
-        "GrantFox Issue Solver\n\n"
-        "Use /setup to connect GitHub, then /assigned to see GrantFox issues "
-        "assigned to your GitHub username."
+        "Issue Solver Bot\n\n"
+        "Use /setup to connect GitHub, then /assigned to see issues "
+        f"assigned to your GitHub username labeled {programs}."
     )
 
 
@@ -129,13 +130,13 @@ async def assigned(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not user:
         await update.message.reply_text("Run /setup first.")
         return
-    issues = await gh.search_assigned_grantfox_issues(
+    issues = await gh.search_assigned_program_issues(
         decrypt_token(user.github_token_encrypted), user.github_username
     )
     if not issues:
-        await update.message.reply_text("No open GrantFox issues are assigned to you.")
+        await update.message.reply_text("No open assigned issues found for the configured programs.")
         return
-    lines = [f"Assigned GrantFox issues ({len(issues)}):"]
+    lines = [f"Assigned issues ({len(issues)}):"]
     for issue in issues[:25]:
         lines.append(f"- #{issue['number']} {issue['title']}\n  {issue['html_url']}")
     if len(issues) > 25:
@@ -161,10 +162,10 @@ async def solve(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     issue = await gh.get_issue(token, repo, number)
     if (
         not gh.is_open_and_assigned(issue, user.github_username)
-        or not gh.is_grantfox_issue(issue)
+        or not gh.is_program_issue(issue)
     ):
         await update.message.reply_text(
-            f"Issue #{number} is not an open GrantFox issue assigned to "
+            f"Issue #{number} is not an open, program-labeled issue assigned to "
             f"@{user.github_username}."
         )
         return
@@ -182,7 +183,7 @@ async def solve_all(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     discovered, queued = await discover_for_user(user)
     await update.message.reply_text(
-        f"Found {discovered} assigned GrantFox issue(s); queued {queued} new job(s)."
+        f"Found {discovered} assigned issue(s); queued {queued} new job(s)."
     )
 
 
@@ -248,9 +249,9 @@ async def resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "/setup - connect or rotate GitHub token\n"
-        "/assigned - list assigned GrantFox issues\n"
+        "/assigned - list assigned issues for configured programs\n"
         "/solve <issue URL> - solve one assigned issue\n"
-        "/solveall - queue every assigned GrantFox issue\n"
+        "/solveall - queue every assigned issue for configured programs\n"
         "/retrypr <PR number> - retry a failed solver PR and reset repair counters\n"
         "/autoon and /autooff - control automatic discovery\n"
         "/solverstatus - job progress\n"

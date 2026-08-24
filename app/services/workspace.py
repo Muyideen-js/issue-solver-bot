@@ -58,9 +58,9 @@ class SolverWorkspace:
         await self._configure_identity()
 
     async def _configure_identity(self) -> None:
-        await self._git("config", "user.name", "grantfox-issue-solver")
+        await self._git("config", "user.name", "issue-solver-bot")
         await self._git(
-            "config", "user.email", "grantfox-issue-solver@users.noreply.github.com"
+            "config", "user.email", "issue-solver-bot@users.noreply.github.com"
         )
 
     def list_files(self, path: str = ".") -> list[str]:

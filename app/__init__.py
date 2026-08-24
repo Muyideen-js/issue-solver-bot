@@ -1,1 +1,1 @@
-"""GrantFox issue solver bot."""
+"""Multi-program issue solver bot (GrantFox OSS, Stellar Wave)."""

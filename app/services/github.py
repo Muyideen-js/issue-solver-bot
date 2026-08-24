@@ -28,25 +28,65 @@ async def validate_token(token: str) -> Optional[str]:
     return response.json().get("login")
 
 
-async def search_assigned_grantfox_issues(token: str, username: str) -> list[dict]:
-    """Search all GitHub repositories, not only the GrantChain organization."""
-    label = os.getenv("GRANTFOX_LABEL", "GrantFox OSS")
-    query = f'is:issue is:open assignee:{username} label:"{label}"'
+def configured_program_labels() -> list[str]:
+    raw = os.getenv("PROGRAM_LABELS", "GrantFox OSS,Stellar Wave")
+    labels = []
+    for part in raw.split(","):
+        label = part.strip()
+        if label and label not in labels:
+            labels.append(label)
+    return labels
+
+
+async def _search_issues(client: httpx.AsyncClient, token: str, query: str) -> list[dict]:
     issues = []
+    page = 1
+    while True:
+        response = await client.get(
+            f"{GITHUB_API}/search/issues",
+            headers=_headers(token),
+            params={"q": query, "per_page": 100, "page": page, "sort": "updated"},
+        )
+        response.raise_for_status()
+        batch = response.json().get("items", [])
+        issues.extend(item for item in batch if "pull_request" not in item)
+        if len(batch) < 100 or page >= 10:
+            return issues
+        page += 1
+
+
+async def search_assigned_program_issues(token: str, username: str) -> list[dict]:
+    """Search all GitHub repositories for every configured program label, not just GrantChain's.
+
+    GitHub's search qualifiers AND together, so an OR across program labels
+    requires one query per label; results are merged and deduplicated by id.
+    """
+    issues: dict[int, dict] = {}
     async with httpx.AsyncClient(timeout=45) as client:
-        page = 1
-        while True:
-            response = await client.get(
-                f"{GITHUB_API}/search/issues",
-                headers=_headers(token),
-                params={"q": query, "per_page": 100, "page": page, "sort": "updated"},
-            )
-            response.raise_for_status()
-            batch = response.json().get("items", [])
-            issues.extend(item for item in batch if "pull_request" not in item)
-            if len(batch) < 100 or page >= 10:
-                return issues
-            page += 1
+        for label in configured_program_labels():
+            query = f'is:issue is:open assignee:{username} label:"{label}"'
+            for item in await _search_issues(client, token, query):
+                issues[item["id"]] = item
+    return list(issues.values())
+
+
+async def search_all_assigned_issues(token: str, username: str) -> list[dict]:
+    """List every open issue assigned to this account, regardless of label."""
+    async with httpx.AsyncClient(timeout=45) as client:
+        items = await _search_issues(client, token, f"is:issue is:open assignee:{username}")
+    issues: dict[int, dict] = {item["id"]: item for item in items}
+    return list(issues.values())
+
+
+def repo_from_issue(issue: dict) -> str | None:
+    """Extract "owner/repo" from a GitHub search-issues or issues API result."""
+    repository_url = issue.get("repository_url") or ""
+    prefix = f"{GITHUB_API}/repos/"
+    if repository_url.startswith(prefix):
+        return repository_url[len(prefix):]
+    html_url = issue.get("html_url") or ""
+    match = re.match(r"https://github\.com/([^/]+/[^/]+)/issues/\d+", html_url)
+    return match.group(1) if match else None
 
 
 def parse_issue_url(url: str) -> tuple[str, int] | None:
@@ -75,13 +115,13 @@ def is_open_and_assigned(issue: dict, username: str) -> bool:
     return issue.get("state") == "open" and username.lower() in assignees
 
 
-def is_grantfox_issue(issue: dict) -> bool:
-    expected = os.getenv("GRANTFOX_LABEL", "GrantFox OSS").lower()
+def is_program_issue(issue: dict) -> bool:
+    expected = {label.lower() for label in configured_program_labels()}
     labels = {
         (item.get("name", "") if isinstance(item, dict) else str(item)).lower()
         for item in issue.get("labels", [])
     }
-    return expected in labels
+    return bool(expected & labels)
 
 
 async def get_repository(token: str, repo: str) -> dict:

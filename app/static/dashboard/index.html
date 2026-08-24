@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Issue Solver Dashboard</title>
+<link rel="stylesheet" href="/dashboard/assets/style.css">
+</head>
+<body>
+<header class="topbar">
+  <h1>Issue Solver Dashboard</h1>
+  <button id="add-account-btn" class="btn btn-primary">+ Add account</button>
+</header>
+
+<nav id="tabs" class="tabs"></nav>
+
+<main id="panel" class="panel">
+  <p class="empty">Add a GitHub account to see its assigned issues.</p>
+</main>
+
+<div id="add-account-modal" class="modal hidden">
+  <div class="modal-card">
+    <h2>Add GitHub account</h2>
+    <p class="hint">Paste a GitHub personal access token. It is encrypted before storage and
+    used only to list and act on issues assigned to that account.</p>
+    <input id="add-account-token" type="password" placeholder="ghp_..." autocomplete="off">
+    <p id="add-account-error" class="error hidden"></p>
+    <div class="modal-actions">
+      <button id="add-account-cancel" class="btn">Cancel</button>
+      <button id="add-account-submit" class="btn btn-primary">Add</button>
+    </div>
+  </div>
+</div>
+
+<script src="/dashboard/assets/app.js"></script>
+</body>
+</html>

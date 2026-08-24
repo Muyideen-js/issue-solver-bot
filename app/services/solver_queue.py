@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import case, select
 from sqlalchemy.exc import IntegrityError
 
-from app.models.database import AsyncSessionLocal, IssueJob, SolverUser
+from app.models.database import AsyncSessionLocal, IssueJob, SolverUser, is_dashboard_user
 from app.services import github as gh
 from app.services.coding_agent import CodingAgentError, solve_issue
 from app.services.crypto import decrypt_token
@@ -57,7 +57,17 @@ async def enqueue_issue(user: SolverUser, issue: dict) -> bool:
 
 async def discover_for_user(user: SolverUser) -> tuple[int, int]:
     token = decrypt_token(user.github_token_encrypted)
-    issues = await gh.search_assigned_grantfox_issues(token, user.github_username)
+    issues = await gh.search_assigned_program_issues(token, user.github_username)
+    queued = 0
+    for issue in issues:
+        queued += int(await enqueue_issue(user, issue))
+    return len(issues), queued
+
+
+async def queue_all_issues_for_account(user: SolverUser) -> tuple[int, int]:
+    """Dashboard "Fix all": queue every open assigned issue, ignoring program labels."""
+    token = decrypt_token(user.github_token_encrypted)
+    issues = await gh.search_all_assigned_issues(token, user.github_username)
     queued = 0
     for issue in issues:
         queued += int(await enqueue_issue(user, issue))
@@ -132,7 +142,7 @@ async def assignment_poller(stop_event: asyncio.Event) -> None:
                 if queued:
                     await notify(
                         user.telegram_id,
-                        f"Found {discovered} assigned GrantFox issue(s); queued {queued} new job(s).",
+                        f"Found {discovered} assigned issue(s); queued {queued} new job(s).",
                     )
             except Exception:
                 logger.exception("Assignment discovery failed for %s", user.github_username)
@@ -198,12 +208,12 @@ async def _process_job(job_id: int) -> None:
         token = decrypt_token(user.github_token_encrypted)
         try:
             issue = await gh.get_issue(token, job.repo_full_name, job.issue_number)
-            if (
-                not gh.is_open_and_assigned(issue, user.github_username)
-                or not gh.is_grantfox_issue(issue)
+            label_gated = not is_dashboard_user(user)
+            if not gh.is_open_and_assigned(issue, user.github_username) or (
+                label_gated and not gh.is_program_issue(issue)
             ):
                 await _finish(
-                    job, db, "SKIPPED", "Issue is no longer assigned or labeled for GrantFox"
+                    job, db, "SKIPPED", "Issue is no longer assigned or labeled for a supported program"
                 )
                 return
             if job.draft_pr_number:
@@ -428,13 +438,7 @@ async def _recover_interrupted_jobs() -> None:
 
 
 def _repo_from_issue(issue: dict) -> str | None:
-    repository_url = issue.get("repository_url") or ""
-    prefix = "https://api.github.com/repos/"
-    if repository_url.startswith(prefix):
-        return repository_url[len(prefix):]
-    html_url = issue.get("html_url") or ""
-    match = re.match(r"https://github\.com/([^/]+/[^/]+)/issues/\d+", html_url)
-    return match.group(1) if match else None
+    return gh.repo_from_issue(issue)
 
 
 def _pr_body(job: IssueJob, result: dict) -> str:
@@ -448,7 +452,7 @@ def _pr_body(job: IssueJob, result: dict) -> str:
 ## Test plan
 {result['test_plan']}
 
-This PR was created as a draft by the GrantFox issue solver. It will remain a
+This PR was created as a draft by the issue solver bot. It will remain a
 draft until repository CI passes.
 
 Closes #{job.issue_number}

@@ -27,10 +27,16 @@ def test_assignment_requires_open_issue_and_exact_user():
     assert github.is_open_and_assigned(issue, "Muyideen-js") is False
 
 
-def test_grantfox_label_is_required(monkeypatch):
-    monkeypatch.setenv("GRANTFOX_LABEL", "GrantFox OSS")
-    assert github.is_grantfox_issue({"labels": [{"name": "GRANTFOX OSS"}]}) is True
-    assert github.is_grantfox_issue({"labels": [{"name": "Stellar Wave"}]}) is False
+def test_a_configured_program_label_is_required(monkeypatch):
+    monkeypatch.setenv("PROGRAM_LABELS", "GrantFox OSS,Stellar Wave")
+    assert github.is_program_issue({"labels": [{"name": "GRANTFOX OSS"}]}) is True
+    assert github.is_program_issue({"labels": [{"name": "Stellar Wave"}]}) is True
+    assert github.is_program_issue({"labels": [{"name": "Mobile"}]}) is False
+
+
+def test_configured_program_labels_are_parsed_and_deduplicated(monkeypatch):
+    monkeypatch.setenv("PROGRAM_LABELS", " GrantFox OSS ,Stellar Wave,GrantFox OSS,")
+    assert github.configured_program_labels() == ["GrantFox OSS", "Stellar Wave"]
 
 
 class FakeResponse:
@@ -49,7 +55,7 @@ class FakeResponse:
 
 class SearchClient:
     def __init__(self):
-        self.params = None
+        self.queries = []
 
     async def __aenter__(self):
         return self
@@ -58,24 +64,69 @@ class SearchClient:
         return None
 
     async def get(self, url, headers, params):
-        self.params = params
+        self.queries.append(params["q"])
+        if "Stellar Wave" in params["q"]:
+            return FakeResponse({
+                "items": [{"id": 2, "number": 5, "title": "Stellar Wave issue"}]
+            })
         return FakeResponse({
             "items": [
-                {"number": 1, "title": "Issue"},
-                {"number": 2, "title": "PR", "pull_request": {}},
+                {"id": 1, "number": 1, "title": "Issue"},
+                {"id": 3, "number": 2, "title": "PR", "pull_request": {}},
             ]
         })
 
 
 @pytest.mark.asyncio
-async def test_assignment_search_uses_connected_username_and_grantfox_label(monkeypatch):
+async def test_assignment_search_merges_every_configured_program_label(monkeypatch):
     client = SearchClient()
-    monkeypatch.setenv("GRANTFOX_LABEL", "GrantFox OSS")
+    monkeypatch.setenv("PROGRAM_LABELS", "GrantFox OSS,Stellar Wave")
     monkeypatch.setattr(github.httpx, "AsyncClient", lambda **kwargs: client)
-    issues = await github.search_assigned_grantfox_issues("token", "Muyideen-js")
-    assert len(issues) == 1
-    assert "assignee:Muyideen-js" in client.params["q"]
-    assert 'label:"GrantFox OSS"' in client.params["q"]
+    issues = await github.search_assigned_program_issues("token", "Muyideen-js")
+    assert {issue["id"] for issue in issues} == {1, 2}
+    assert any("assignee:Muyideen-js" in q and 'label:"GrantFox OSS"' in q for q in client.queries)
+    assert any("assignee:Muyideen-js" in q and 'label:"Stellar Wave"' in q for q in client.queries)
+
+
+class UnrestrictedSearchClient:
+    def __init__(self):
+        self.queries = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
+    async def get(self, url, headers, params):
+        self.queries.append(params["q"])
+        return FakeResponse({
+            "items": [
+                {"id": 1, "number": 1, "title": "Any issue"},
+                {"id": 2, "number": 2, "title": "PR", "pull_request": {}},
+            ]
+        })
+
+
+@pytest.mark.asyncio
+async def test_search_all_assigned_issues_ignores_program_labels(monkeypatch):
+    client = UnrestrictedSearchClient()
+    monkeypatch.setattr(github.httpx, "AsyncClient", lambda **kwargs: client)
+    issues = await github.search_all_assigned_issues("token", "Muyideen-js")
+    assert [issue["id"] for issue in issues] == [1]
+    assert client.queries == ["is:issue is:open assignee:Muyideen-js"]
+    assert "label:" not in client.queries[0]
+
+
+def test_repo_from_issue_prefers_repository_url():
+    assert github.repo_from_issue({
+        "repository_url": "https://api.github.com/repos/owner/repo",
+        "html_url": "https://github.com/other/other/issues/9",
+    }) == "owner/repo"
+    assert github.repo_from_issue({
+        "html_url": "https://github.com/owner/repo/issues/9",
+    }) == "owner/repo"
+    assert github.repo_from_issue({}) is None
 
 
 class CiDetailsClient:

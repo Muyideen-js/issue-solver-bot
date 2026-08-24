@@ -1,22 +1,26 @@
 # GrantFox Issue Solver Bot
 
 A separate Telegram-controlled coding agent that discovers open GitHub issues
-assigned to the connected contributor and labeled `GrantFox OSS`, implements
-them with DeepSeek, pushes branches to the contributor's fork, and creates draft
-pull requests. Drafts become ready for review only after repository CI passes.
+assigned to the connected contributor and labeled for a configured program
+(by default `GrantFox OSS` or `Stellar Wave`), implements them with DeepSeek,
+pushes branches to the contributor's fork, and creates draft pull requests.
+Drafts become ready for review only after repository CI passes.
 
 ## How assignment detection works
 
 `/setup` validates the stored GitHub token through `GET /user`; the returned
-login is the source of truth. The bot searches GitHub for:
+login is the source of truth. For each label in `PROGRAM_LABELS` the bot
+searches GitHub for:
 
 ```text
-is:issue is:open assignee:<connected-login> label:"GrantFox OSS"
+is:issue is:open assignee:<connected-login> label:"<program label>"
 ```
 
-It rechecks the issue immediately before coding. An issue removed from the user
-or closed before work starts is skipped. This search spans every participating
-repository, not just repositories owned by GrantChain.
+and merges the results, since GitHub search qualifiers AND together rather
+than OR. It rechecks the issue immediately before coding. An issue removed
+from the user, closed, or missing every configured label before work starts
+is skipped. This search spans every participating repository, not just
+repositories owned by GrantChain.
 
 ## Solver lifecycle
 
@@ -55,9 +59,9 @@ cannot consume the shared DeepSeek balance.
 ## Telegram commands
 
 - `/setup` — connect or rotate the GitHub token
-- `/assigned` — list open assigned GrantFox issues
+- `/assigned` — list open assigned issues for configured programs
 - `/solve <issue-url>` — queue one assigned issue
-- `/solveall` — queue all assigned GrantFox issues
+- `/solveall` — queue all assigned issues for configured programs
 - `/retrypr <PR-number>` — retry a stopped solver PR and reset its repair counters
   while explicitly adopting any manual fixes already pushed to that PR branch
 - `/autoon` and `/autooff` — control five-minute automatic discovery
@@ -65,6 +69,30 @@ cannot consume the shared DeepSeek balance.
 - `/pause` and `/resume` — pause or resume new issue implementations; existing
   draft PRs continue CI monitoring and automatic repair
 - `/help`
+
+## Web dashboard
+
+An optional dashboard at `/dashboard` runs alongside Telegram, sharing the same
+queue, workers, and database. It's for a different workflow than the
+label-gated auto-solve above: paste any GitHub token into a tab and see
+**every** open issue assigned to that account, with no `PROGRAM_LABELS`
+filter. Click **Fix** on an issue (or **Fix all**) to queue it through the
+exact same clone → implement → draft PR → CI-repair pipeline Telegram uses.
+**Skip** marks an issue as intentionally not being worked, without ever
+writing to GitHub (no auto-close) — the bot never takes action on an issue
+it decided not to fix.
+
+A dashboard account is created directly on `/dashboard`, independent of the
+Telegram-connected owner; it never participates in the 5-minute label-gated
+poller or Telegram commands.
+
+The dashboard is protected by a single HTTP Basic Auth login (your browser
+will prompt) and is disabled (503) until `DASHBOARD_PASSWORD` is set:
+
+```env
+DASHBOARD_USERNAME=admin
+DASHBOARD_PASSWORD=
+```
 
 ## Environment
 
@@ -76,12 +104,14 @@ TELEGRAM_OWNER_ID=123456789
 ENCRYPTION_KEY=...
 DEEPSEEK_API_KEY=...
 DEEPSEEK_MODEL=deepseek-v4-flash
-GRANTFOX_LABEL=GrantFox OSS
+PROGRAM_LABELS=GrantFox OSS,Stellar Wave
 ASSIGNMENT_POLL_SECONDS=300
 SOLVER_MAX_TURNS=30
 SOLVER_REPAIR_MAX_TURNS=16
 SOLVER_MAX_REPAIR_ATTEMPTS=2
 DATABASE_URL=postgresql://user:password@host/database
+DASHBOARD_USERNAME=admin
+DASHBOARD_PASSWORD=
 ```
 
 The GitHub token needs issue/metadata read access, Checks read access, Actions
