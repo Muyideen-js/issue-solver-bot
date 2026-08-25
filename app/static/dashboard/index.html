@@ -7,9 +7,18 @@
 <link rel="stylesheet" href="/dashboard/assets/style.css">
 </head>
 <body>
+<div id="impersonation-banner" class="banner hidden">
+  <span id="impersonation-text"></span>
+  <button id="exit-view-as-btn" class="btn">Exit</button>
+</div>
+
 <header class="topbar">
   <h1>Issue Solver Dashboard</h1>
-  <button id="add-account-btn" class="btn btn-primary">+ Add account</button>
+  <div class="inline">
+    <a id="admin-link" href="/dashboard/admin" class="btn hidden">Admin</a>
+    <button id="add-account-btn" class="btn btn-primary">+ Add account</button>
+    <button id="logout-btn" class="btn">Log out</button>
+  </div>
 </header>
 
 <nav id="tabs" class="tabs"></nav>
@@ -28,6 +37,25 @@
     <div class="modal-actions">
       <button id="add-account-cancel" class="btn">Cancel</button>
       <button id="add-account-submit" class="btn btn-primary">Add</button>
+    </div>
+  </div>
+</div>
+
+<div id="change-password-modal" class="modal hidden">
+  <div class="modal-card">
+    <h2>Set your password</h2>
+    <p class="hint">You're using a temporary password. Set your own before continuing.</p>
+    <div class="form-row">
+      <label>Current (temporary) password</label>
+      <input id="current-password" type="password" autocomplete="current-password">
+    </div>
+    <div class="form-row">
+      <label>New password</label>
+      <input id="new-password-value" type="password" autocomplete="new-password" placeholder="At least 10 characters">
+    </div>
+    <p id="change-password-error" class="error hidden"></p>
+    <div class="modal-actions">
+      <button id="change-password-submit" class="btn btn-primary">Set password</button>
     </div>
   </div>
 </div>

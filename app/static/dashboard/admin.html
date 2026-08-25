@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin — Issue Solver Dashboard</title>
+<link rel="stylesheet" href="/dashboard/assets/style.css">
+</head>
+<body>
+<header class="topbar">
+  <h1>Admin — People</h1>
+  <div class="inline">
+    <a class="btn" href="/dashboard">Back to dashboard</a>
+    <button id="logout-btn" class="btn">Log out</button>
+  </div>
+</header>
+
+<main class="panel">
+  <div class="panel-header">
+    <h2>People</h2>
+    <button id="add-user-btn" class="btn btn-primary">+ Create user</button>
+  </div>
+  <table>
+    <thead><tr><th>Username</th><th>Status</th><th>Created</th><th></th></tr></thead>
+    <tbody id="users-body"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+  </table>
+</main>
+
+<div id="add-user-modal" class="modal hidden">
+  <div class="modal-card">
+    <h2>Create user</h2>
+    <p class="hint">They'll sign in with this username and temporary password, then be
+    required to set their own password.</p>
+    <div class="form-row">
+      <label>Username</label>
+      <input id="new-username" type="text" autocomplete="off" placeholder="jane">
+    </div>
+    <div class="form-row">
+      <label>Temporary password</label>
+      <input id="new-password" type="text" autocomplete="off" placeholder="At least 10 characters">
+    </div>
+    <p id="add-user-error" class="error hidden"></p>
+    <div class="modal-actions">
+      <button id="add-user-cancel" class="btn">Cancel</button>
+      <button id="add-user-submit" class="btn btn-primary">Create</button>
+    </div>
+  </div>
+</div>
+
+<div id="reset-password-modal" class="modal hidden">
+  <div class="modal-card">
+    <h2>Reset password</h2>
+    <p class="hint" id="reset-password-hint"></p>
+    <div class="form-row">
+      <label>New temporary password</label>
+      <input id="reset-password-value" type="text" autocomplete="off" placeholder="At least 10 characters">
+    </div>
+    <p id="reset-password-error" class="error hidden"></p>
+    <div class="modal-actions">
+      <button id="reset-password-cancel" class="btn">Cancel</button>
+      <button id="reset-password-submit" class="btn btn-primary">Reset</button>
+    </div>
+  </div>
+</div>
+
+<script src="/dashboard/assets/admin.js"></script>
+</body>
+</html>

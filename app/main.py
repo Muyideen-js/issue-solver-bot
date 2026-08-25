@@ -10,10 +10,11 @@ load_dotenv()
 
 from fastapi import FastAPI, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.sessions import SessionMiddleware
 
 from app import dashboard
 from app.config import validate_settings
-from app.models.database import init_db
+from app.models.database import bootstrap_admin, init_db
 from app.services.solver_queue import assignment_poller, solver_worker
 from app.telegram_bot import build_application
 
@@ -31,6 +32,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     validate_settings()
     await init_db()
+    await bootstrap_admin()
     stop_event = asyncio.Event()
     telegram = build_application(os.environ["TELEGRAM_SOLVER_BOT_TOKEN"])
     await telegram.initialize()
@@ -54,6 +56,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Issue Solver Bot", lifespan=lifespan)
+# Every dashboard action is a same-origin fetch() JSON call, never an HTML form
+# POST, so SameSite=Lax already blocks cross-site requests from carrying this
+# cookie — a separate CSRF token isn't needed on top of that.
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.environ["ENCRYPTION_KEY"],
+    same_site="lax",
+    https_only=os.getenv("DASHBOARD_COOKIE_SECURE", "true").lower() != "false",
+)
 app.include_router(dashboard.router)
 app.mount(
     "/dashboard/assets",

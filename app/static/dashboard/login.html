@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in — Issue Solver Dashboard</title>
+<link rel="stylesheet" href="/dashboard/assets/style.css">
+</head>
+<body>
+<div class="login-page">
+  <div class="modal-card">
+    <h2>Sign in</h2>
+    <input id="username" type="text" placeholder="Username" autocomplete="username">
+    <input id="password" type="password" placeholder="Password" autocomplete="current-password">
+    <p id="error" class="error hidden"></p>
+    <div class="modal-actions">
+      <button id="submit" class="btn btn-primary button-block">Sign in</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  const usernameInput = document.getElementById("username");
+  const passwordInput = document.getElementById("password");
+  const errorEl = document.getElementById("error");
+
+  async function submit() {
+    errorEl.classList.add("hidden");
+    try {
+      const response = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: usernameInput.value.trim(),
+          password: passwordInput.value,
+        }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.detail || "Sign in failed");
+      }
+      window.location.href = "/dashboard";
+    } catch (err) {
+      errorEl.textContent = err.message;
+      errorEl.classList.remove("hidden");
+    }
+  }
+
+  document.getElementById("submit").addEventListener("click", submit);
+  passwordInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") submit();
+  });
+  usernameInput.focus();
+})();
+</script>
+</body>
+</html>

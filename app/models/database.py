@@ -2,10 +2,12 @@
 import os
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text, UniqueConstraint, inspect, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.pool import StaticPool
+
+from app.services.password import hash_password
 
 
 def _database_url() -> str:
@@ -41,6 +43,21 @@ class SolverUser(Base):
     github_token_encrypted = Column(String, nullable=False)
     auto_solve = Column(Boolean, nullable=False, default=False)
     paused = Column(Boolean, nullable=False, default=False)
+    # Nullable, no FK constraint — matches this table's existing convention of
+    # associating rows by plain value rather than ORM relationships. Only
+    # meaningful for dash:-prefixed (dashboard) accounts.
+    owner_portal_user_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PortalUser(Base):
+    __tablename__ = "portal_users"
+
+    id = Column(Integer, primary_key=True)
+    username = Column(String, unique=True, nullable=False)
+    password_hash = Column(String, nullable=False)
+    is_admin = Column(Boolean, nullable=False, default=False)
+    must_change_password = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -76,8 +93,86 @@ class IssueJob(Base):
 async def init_db() -> None:
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
+    await _add_missing_columns()
+
+
+async def _add_missing_columns() -> None:
+    """Idempotently add new columns to tables that already existed in production.
+
+    create_all only creates missing tables, never alters existing ones, so a
+    column added to a model here needs a matching entry below to reach an
+    already-deployed database.
+    """
+    additions = {
+        "solver_users": {"owner_portal_user_id": "INTEGER"},
+    }
+
+    def _migrate(sync_connection) -> None:
+        inspector = inspect(sync_connection)
+        table_names = inspector.get_table_names()
+        for table_name, columns in additions.items():
+            if table_name not in table_names:
+                continue
+            existing = {column["name"] for column in inspector.get_columns(table_name)}
+            for column_name, definition in columns.items():
+                if column_name in existing:
+                    continue
+                sync_connection.execute(
+                    text(f'ALTER TABLE "{table_name}" ADD COLUMN "{column_name}" {definition}')
+                )
+
+    async with engine.begin() as connection:
+        await connection.run_sync(_migrate)
 
 
 def is_dashboard_user(user: SolverUser) -> bool:
     """Dashboard-added accounts carry a synthetic telegram_id, not a real Telegram ID."""
     return user.telegram_id.startswith(DASHBOARD_ID_PREFIX)
+
+
+async def bootstrap_admin() -> PortalUser | None:
+    """Create or promote the initial admin from env vars.
+
+    Any dash: dashboard account created before this feature shipped has no
+    owner yet; the first time the admin is created (not merely promoted),
+    those orphaned accounts are adopted so they don't disappear from view.
+    """
+    username = os.getenv("DASHBOARD_USERNAME", "").strip().lower()
+    password = os.getenv("DASHBOARD_PASSWORD", "")
+    if not username or not password:
+        return None
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(PortalUser).where(PortalUser.username == username))
+        admin = result.scalar_one_or_none()
+        created = False
+        if admin:
+            if not admin.is_admin:
+                admin.is_admin = True
+        else:
+            admin = PortalUser(
+                username=username,
+                password_hash=hash_password(password),
+                is_admin=True,
+                must_change_password=False,
+            )
+            db.add(admin)
+            created = True
+        await db.commit()
+        await db.refresh(admin)
+
+        if created:
+            orphaned = await db.execute(
+                select(SolverUser).where(
+                    SolverUser.telegram_id.startswith(DASHBOARD_ID_PREFIX),
+                    SolverUser.owner_portal_user_id.is_(None),
+                )
+            )
+            adopted_any = False
+            for account in orphaned.scalars():
+                account.owner_portal_user_id = admin.id
+                adopted_any = True
+            if adopted_any:
+                await db.commit()
+
+        return admin

@@ -8,3 +8,4 @@ asyncpg
 cryptography
 python-dotenv
 greenlet
+itsdangerous

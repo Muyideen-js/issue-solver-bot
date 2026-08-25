@@ -84,17 +84,28 @@ it decided not to fix. **Ready for review** overrides the normal
 CI-gated flow and force-marks a draft PR ready immediately, for when you've
 already reviewed it yourself and don't want to wait on CI.
 
-A dashboard account is created directly on `/dashboard`, independent of the
-Telegram-connected owner; it never participates in the 5-minute label-gated
-poller or Telegram commands.
+A GitHub-token account (tab) belongs to whichever person added it and is
+never visible to anyone else. Neither Telegram commands nor the 5-minute
+label-gated poller are affected by any of this — they're a separate flow.
 
-The dashboard is protected by a single HTTP Basic Auth login (your browser
-will prompt) and is disabled (503) until `DASHBOARD_PASSWORD` is set:
+### Dashboard accounts and admin control
 
-```env
-DASHBOARD_USERNAME=admin
-DASHBOARD_PASSWORD=
-```
+`DASHBOARD_USERNAME`/`DASHBOARD_PASSWORD` become the initial **admin**
+login on first startup, not a shared password for everyone. From
+`/dashboard/admin` that admin can:
+
+- **Create** a login for someone else (username + temporary password; they
+  must set their own password on first sign-in).
+- **Reset** anyone's password.
+- **View as** anyone — see and act on their GitHub-token tabs exactly as
+  they would, with a banner to exit back to your own view.
+- **Delete** someone — removes their login, GitHub-token tabs, and job
+  history entirely.
+
+Regular (non-admin) people only ever see their own tabs; there's no
+self-signup. Sessions are a signed cookie (`ENCRYPTION_KEY` is reused as
+the signing secret — no extra config needed); set `DASHBOARD_COOKIE_SECURE=false`
+only for local `http://localhost` testing.
 
 ## Environment
 
@@ -115,6 +126,7 @@ SOLVER_CONCURRENCY=3
 DATABASE_URL=postgresql://user:password@host/database
 DASHBOARD_USERNAME=admin
 DASHBOARD_PASSWORD=
+DASHBOARD_COOKIE_SECURE=true
 ```
 
 The GitHub token needs issue/metadata read access, Checks read access, Actions

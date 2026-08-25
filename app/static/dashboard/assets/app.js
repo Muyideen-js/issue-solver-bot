@@ -31,6 +31,10 @@
       headers: { "Content-Type": "application/json" },
       ...options,
     });
+    if (response.status === 401) {
+      window.location.href = "/dashboard/login";
+      return new Promise(() => {}); // navigation is in flight; stop this caller here
+    }
     if (!response.ok) {
       let detail = response.statusText;
       try {
@@ -154,31 +158,33 @@
       const canMarkReady = Boolean(issue.pr_url) && issue.status !== "DONE";
       const prLink = issue.pr_url
         ? `<a href="${esc(safeHref(issue.pr_url))}" target="_blank" rel="noopener">PR</a>` : "";
+      const readyBtn = canMarkReady
+        ? `<button class="btn" data-ready="${esc(issue.repo)}|${issue.number}">Ready for review</button>` : "";
       return `
         <tr>
           <td><a href="${esc(safeHref(issue.url))}" target="_blank" rel="noopener">${esc(issue.title)}</a></td>
-          <td>${esc(issue.repo)}#${esc(issue.number)}</td>
+          <td>${esc(issue.repo)}#${esc(issue.number)} ${readyBtn}</td>
           <td class="labels">${labels}</td>
           <td>${statusBadge(issue.status)} ${prLink}</td>
           <td class="row-actions">
             ${canFix ? `<button class="btn btn-primary" data-fix="${esc(issue.repo)}|${issue.number}|${esc(issue.title)}|${esc(issue.url)}">Fix</button>` : ""}
             ${canSkip ? `<button class="btn" data-skip="${esc(issue.repo)}|${issue.number}|${esc(issue.title)}|${esc(issue.url)}">Skip</button>` : ""}
             ${canUnskip ? `<button class="btn" data-unskip="${esc(issue.repo)}|${issue.number}">Unskip</button>` : ""}
-            ${canMarkReady ? `<button class="btn" data-ready="${esc(issue.repo)}|${issue.number}">Ready for review</button>` : ""}
           </td>
         </tr>`;
     }).join("");
 
     const jobRows = state.jobs.map((job) => {
       const canMarkReady = Boolean(job.pr_url) && job.status !== "DONE";
+      const readyBtn = canMarkReady
+        ? `<button class="btn" data-ready="${esc(job.repo)}|${job.number}">Ready for review</button>` : "";
       return `
       <tr>
         <td><a href="${esc(safeHref(job.issue_url))}" target="_blank" rel="noopener">${esc(job.title)}</a></td>
-        <td>${esc(job.repo)}#${esc(job.number)}</td>
+        <td>${esc(job.repo)}#${esc(job.number)} ${readyBtn}</td>
         <td>${statusBadge(job.status)}</td>
         <td>${job.pr_url ? `<a href="${esc(safeHref(job.pr_url))}" target="_blank" rel="noopener">PR</a>` : ""}</td>
         <td>${esc((job.last_error || "").slice(0, 140))}</td>
-        <td>${canMarkReady ? `<button class="btn" data-ready="${esc(job.repo)}|${job.number}">Ready for review</button>` : ""}</td>
       </tr>`;
     }).join("");
 
@@ -196,8 +202,8 @@
       </table>
       <div class="section-title">Job history</div>
       <table>
-        <thead><tr><th>Issue</th><th>Repo</th><th>Status</th><th>PR</th><th>Last note</th><th></th></tr></thead>
-        <tbody>${jobRows || `<tr><td colspan="6" class="empty">No jobs yet.</td></tr>`}</tbody>
+        <thead><tr><th>Issue</th><th>Repo</th><th>Status</th><th>PR</th><th>Last note</th></tr></thead>
+        <tbody>${jobRows || `<tr><td colspan="5" class="empty">No jobs yet.</td></tr>`}</tbody>
       </table>
     `;
 
@@ -331,9 +337,62 @@
     if (event.key === "Enter") submitAddAccount();
   });
 
-  loadAccounts().catch((err) => {
-    panelEl.innerHTML = `<p class="error">${esc(err.message)}</p>`;
+  document.getElementById("logout-btn").addEventListener("click", async () => {
+    await api("/api/logout", { method: "POST" }).catch(() => {});
+    window.location.href = "/dashboard/login";
   });
+
+  document.getElementById("exit-view-as-btn").addEventListener("click", async () => {
+    try {
+      await api("/api/admin/exit-view-as", { method: "POST" });
+      window.location.reload();
+    } catch (err) {
+      alert(err.message);
+    }
+  });
+
+  const changePasswordModal = document.getElementById("change-password-modal");
+  const currentPasswordInput = document.getElementById("current-password");
+  const newPasswordValueInput = document.getElementById("new-password-value");
+  const changePasswordError = document.getElementById("change-password-error");
+
+  document.getElementById("change-password-submit").addEventListener("click", async () => {
+    changePasswordError.classList.add("hidden");
+    try {
+      await api("/api/change-password", {
+        method: "POST",
+        body: JSON.stringify({
+          current_password: currentPasswordInput.value,
+          new_password: newPasswordValueInput.value,
+        }),
+      });
+      changePasswordModal.classList.add("hidden");
+    } catch (err) {
+      changePasswordError.textContent = err.message;
+      changePasswordError.classList.remove("hidden");
+    }
+  });
+
+  async function initSession() {
+    const me = await api("/api/me");
+    if (me.is_admin) {
+      document.getElementById("admin-link").classList.remove("hidden");
+    }
+    if (me.impersonating) {
+      document.getElementById("impersonation-text").textContent =
+        `Viewing @${me.impersonating.username}'s dashboard`;
+      document.getElementById("impersonation-banner").classList.remove("hidden");
+    }
+    if (me.must_change_password) {
+      changePasswordModal.classList.remove("hidden");
+    }
+  }
+
+  initSession()
+    .then(loadAccounts)
+    .catch((err) => {
+      panelEl.innerHTML = `<p class="error">${esc(err.message)}</p>`;
+    });
 
   setInterval(() => {
     if (state.activeAccountId && modalEl.classList.contains("hidden")) {

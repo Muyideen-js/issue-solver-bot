@@ -1,15 +1,15 @@
-"""Web dashboard: unrestricted per-account issue triage alongside Telegram."""
+"""Web dashboard: per-user login, unrestricted issue triage, and admin control."""
 import logging
 import os
 import re
-import secrets
+from collections import defaultdict, deque
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select
 
@@ -17,20 +17,45 @@ from app.models.database import (
     AsyncSessionLocal,
     DASHBOARD_ID_PREFIX,
     IssueJob,
+    PortalUser,
     SolverUser,
     is_dashboard_user,
 )
 from app.services import github as gh
 from app.services.crypto import decrypt_token, encrypt_token
+from app.services.password import hash_password, verify_password
 from app.services.solver_queue import enqueue_issue, queue_all_issues_for_account
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-security = HTTPBasic()
 
 STATIC_DIR = Path(__file__).resolve().parent / "static" / "dashboard"
 ACTIVE_STATUSES = {"QUEUED", "PROCESSING", "WAITING_CI"}
 REPO_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{3,40}$")
+
+LOGIN_ATTEMPTS: dict[str, deque] = defaultdict(deque)
+MAX_LOGIN_ATTEMPTS = 8
+LOGIN_WINDOW = timedelta(minutes=15)
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class CreateUserRequest(BaseModel):
+    username: str
+    temporary_password: str
+
+
+class ResetPasswordRequest(BaseModel):
+    temporary_password: str
 
 
 class AddAccountRequest(BaseModel):
@@ -44,17 +69,56 @@ class IssueRef(BaseModel):
     url: str | None = None
 
 
-def require_dashboard_auth(credentials: HTTPBasicCredentials = Depends(security)) -> None:
-    configured_password = os.getenv("DASHBOARD_PASSWORD")
-    if not configured_password:
-        raise HTTPException(status_code=503, detail="Dashboard is not configured")
-    expected_username = os.getenv("DASHBOARD_USERNAME", "admin")
-    valid_username = secrets.compare_digest(credentials.username, expected_username)
-    valid_password = secrets.compare_digest(credentials.password, configured_password)
-    if not (valid_username and valid_password):
-        raise HTTPException(
-            status_code=401, detail="Invalid credentials", headers={"WWW-Authenticate": "Basic"}
-        )
+async def require_login(request: Request) -> PortalUser:
+    user_id = request.session.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Login required")
+    async with AsyncSessionLocal() as db:
+        user = await db.get(PortalUser, user_id)
+    if not user:
+        request.session.clear()
+        raise HTTPException(status_code=401, detail="Login required")
+    return user
+
+
+async def require_admin(user: PortalUser = Depends(require_login)) -> PortalUser:
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
+
+
+async def current_scope_user(
+    request: Request, user: PortalUser = Depends(require_login)
+) -> PortalUser:
+    """The portal user whose accounts should be shown/acted on.
+
+    That's the impersonation target while an admin is "viewing as" someone,
+    otherwise it's just the logged-in user themself.
+    """
+    view_as_id = request.session.get("view_as_id")
+    if view_as_id and user.is_admin:
+        async with AsyncSessionLocal() as db:
+            target = await db.get(PortalUser, view_as_id)
+        if target:
+            return target
+        request.session.pop("view_as_id", None)
+    return user
+
+
+def _client_key(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _rate_limited(key: str) -> bool:
+    now = datetime.now(timezone.utc)
+    attempts = LOGIN_ATTEMPTS[key]
+    while attempts and attempts[0] < now - LOGIN_WINDOW:
+        attempts.popleft()
+    return len(attempts) >= MAX_LOGIN_ATTEMPTS
+
+
+def _record_login_failure(key: str) -> None:
+    LOGIN_ATTEMPTS[key].append(datetime.now(timezone.utc))
 
 
 async def _safe_github_call(coro):
@@ -75,11 +139,22 @@ def _validate_repo(repo: str) -> None:
         raise HTTPException(status_code=400, detail="Invalid repository name")
 
 
-async def _get_dashboard_account(db, account_id: int) -> SolverUser:
+async def _get_dashboard_account(db, account_id: int, owner: PortalUser) -> SolverUser:
     account = await db.get(SolverUser, account_id)
-    if not account or not is_dashboard_user(account):
+    if (
+        not account
+        or not is_dashboard_user(account)
+        or account.owner_portal_user_id != owner.id
+    ):
         raise HTTPException(status_code=404, detail="Account not found")
     return account
+
+
+async def _get_manageable_user(db, user_id: int) -> PortalUser:
+    user = await db.get(PortalUser, user_id)
+    if not user or user.is_admin:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
 
 
 def _account_summary(account: SolverUser) -> dict:
@@ -87,6 +162,15 @@ def _account_summary(account: SolverUser) -> dict:
         "id": account.id,
         "github_username": account.github_username,
         "created_at": account.created_at.isoformat() if account.created_at else None,
+    }
+
+
+def _user_summary(user: PortalUser) -> dict:
+    return {
+        "id": user.id,
+        "username": user.username,
+        "must_change_password": user.must_change_password,
+        "created_at": user.created_at.isoformat() if user.created_at else None,
     }
 
 
@@ -121,23 +205,204 @@ def _job_summary(job: IssueJob) -> dict:
     }
 
 
-@router.get("/dashboard", dependencies=[Depends(require_dashboard_auth)])
-async def dashboard_page():
+# --- Pages -------------------------------------------------------------
+
+@router.get("/dashboard")
+async def dashboard_page(request: Request):
+    if not request.session.get("user_id"):
+        return RedirectResponse("/dashboard/login")
     return FileResponse(STATIC_DIR / "index.html")
 
 
-@router.get("/api/accounts", dependencies=[Depends(require_dashboard_auth)])
-async def list_accounts():
+@router.get("/dashboard/login")
+async def login_page(request: Request):
+    if request.session.get("user_id"):
+        return RedirectResponse("/dashboard")
+    return FileResponse(STATIC_DIR / "login.html")
+
+
+@router.get("/dashboard/admin")
+async def admin_page(request: Request):
+    user_id = request.session.get("user_id")
+    if not user_id:
+        return RedirectResponse("/dashboard/login")
+    async with AsyncSessionLocal() as db:
+        user = await db.get(PortalUser, user_id)
+    if not user or not user.is_admin:
+        return RedirectResponse("/dashboard")
+    return FileResponse(STATIC_DIR / "admin.html")
+
+
+# --- Auth ----------------------------------------------------------------
+
+@router.post("/api/login")
+async def login(payload: LoginRequest, request: Request):
+    key = _client_key(request)
+    if _rate_limited(key):
+        raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
+    username = payload.username.strip().lower()
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(PortalUser).where(PortalUser.username == username))
+        user = result.scalar_one_or_none()
+    if not user or not verify_password(payload.password, user.password_hash):
+        _record_login_failure(key)
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    LOGIN_ATTEMPTS.pop(key, None)
+    request.session.clear()
+    request.session["user_id"] = user.id
+    return {"must_change_password": user.must_change_password, "is_admin": user.is_admin}
+
+
+@router.post("/api/logout")
+async def logout(request: Request):
+    request.session.clear()
+    return {"loggedOut": True}
+
+
+@router.post("/api/change-password")
+async def change_password(
+    payload: ChangePasswordRequest, user: PortalUser = Depends(require_login)
+):
+    if len(payload.new_password) < 10:
+        raise HTTPException(
+            status_code=400, detail="New password must contain at least 10 characters"
+        )
+    async with AsyncSessionLocal() as db:
+        fresh = await db.get(PortalUser, user.id)
+        if not verify_password(payload.current_password, fresh.password_hash):
+            raise HTTPException(status_code=400, detail="Current password is incorrect")
+        fresh.password_hash = hash_password(payload.new_password)
+        fresh.must_change_password = False
+        await db.commit()
+    return {"changed": True}
+
+
+@router.get("/api/me")
+async def me(request: Request, user: PortalUser = Depends(require_login)):
+    impersonating = None
+    view_as_id = request.session.get("view_as_id")
+    if view_as_id and user.is_admin:
+        async with AsyncSessionLocal() as db:
+            target = await db.get(PortalUser, view_as_id)
+        if target:
+            impersonating = {"id": target.id, "username": target.username}
+        else:
+            request.session.pop("view_as_id", None)
+    return {
+        "username": user.username,
+        "is_admin": user.is_admin,
+        "must_change_password": user.must_change_password,
+        "impersonating": impersonating,
+    }
+
+
+# --- Admin: manage people --------------------------------------------------
+
+@router.get("/api/admin/users")
+async def list_users(_: PortalUser = Depends(require_admin)):
     async with AsyncSessionLocal() as db:
         result = await db.execute(
-            select(SolverUser).where(SolverUser.telegram_id.startswith(DASHBOARD_ID_PREFIX))
+            select(PortalUser).where(PortalUser.is_admin.is_(False)).order_by(PortalUser.username)
+        )
+        users = result.scalars().all()
+    return [_user_summary(user) for user in users]
+
+
+@router.post("/api/admin/users")
+async def create_user(payload: CreateUserRequest, _: PortalUser = Depends(require_admin)):
+    username = payload.username.strip().lower()
+    if not USERNAME_PATTERN.fullmatch(username):
+        raise HTTPException(
+            status_code=400,
+            detail="Username must be 3-40 letters, numbers, dots, underscores, or hyphens",
+        )
+    if len(payload.temporary_password) < 10:
+        raise HTTPException(
+            status_code=400, detail="Temporary password must contain at least 10 characters"
+        )
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(PortalUser).where(PortalUser.username == username))
+        if result.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="That username already exists")
+        user = PortalUser(
+            username=username,
+            password_hash=hash_password(payload.temporary_password),
+            is_admin=False,
+            must_change_password=True,
+        )
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+    return _user_summary(user)
+
+
+@router.post("/api/admin/users/{user_id}/reset-password")
+async def reset_password(
+    user_id: int, payload: ResetPasswordRequest, _: PortalUser = Depends(require_admin)
+):
+    if len(payload.temporary_password) < 10:
+        raise HTTPException(
+            status_code=400, detail="Temporary password must contain at least 10 characters"
+        )
+    async with AsyncSessionLocal() as db:
+        user = await _get_manageable_user(db, user_id)
+        user.password_hash = hash_password(payload.temporary_password)
+        user.must_change_password = True
+        await db.commit()
+    return {"reset": True}
+
+
+@router.delete("/api/admin/users/{user_id}")
+async def delete_user(user_id: int, request: Request, _: PortalUser = Depends(require_admin)):
+    async with AsyncSessionLocal() as db:
+        user = await _get_manageable_user(db, user_id)
+        accounts_result = await db.execute(
+            select(SolverUser.telegram_id).where(SolverUser.owner_portal_user_id == user.id)
+        )
+        telegram_ids = [row[0] for row in accounts_result.all()]
+        for telegram_id in telegram_ids:
+            await db.execute(delete(IssueJob).where(IssueJob.telegram_id == telegram_id))
+        await db.execute(delete(SolverUser).where(SolverUser.owner_portal_user_id == user.id))
+        await db.delete(user)
+        await db.commit()
+    if request.session.get("view_as_id") == user_id:
+        request.session.pop("view_as_id", None)
+    return {"deleted": True}
+
+
+@router.post("/api/admin/users/{user_id}/view-as")
+async def view_as(user_id: int, request: Request, _: PortalUser = Depends(require_admin)):
+    async with AsyncSessionLocal() as db:
+        user = await _get_manageable_user(db, user_id)
+    request.session["view_as_id"] = user.id
+    return {"viewing_as": user.username}
+
+
+@router.post("/api/admin/exit-view-as")
+async def exit_view_as(request: Request, _: PortalUser = Depends(require_login)):
+    request.session.pop("view_as_id", None)
+    return {"exited": True}
+
+
+# --- Accounts and issues (scoped to the current/impersonated user) --------
+
+@router.get("/api/accounts")
+async def list_accounts(scope_user: PortalUser = Depends(current_scope_user)):
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(SolverUser).where(
+                SolverUser.telegram_id.startswith(DASHBOARD_ID_PREFIX),
+                SolverUser.owner_portal_user_id == scope_user.id,
+            )
         )
         accounts = result.scalars().all()
     return [_account_summary(account) for account in accounts]
 
 
-@router.post("/api/accounts", dependencies=[Depends(require_dashboard_auth)])
-async def add_account(payload: AddAccountRequest):
+@router.post("/api/accounts")
+async def add_account(
+    payload: AddAccountRequest, scope_user: PortalUser = Depends(current_scope_user)
+):
     token = payload.token.strip()
     if not token:
         raise HTTPException(status_code=400, detail="A GitHub token is required")
@@ -148,6 +413,7 @@ async def add_account(payload: AddAccountRequest):
         result = await db.execute(
             select(SolverUser).where(
                 SolverUser.telegram_id.startswith(DASHBOARD_ID_PREFIX),
+                SolverUser.owner_portal_user_id == scope_user.id,
                 func.lower(SolverUser.github_username) == username.lower(),
             )
         )
@@ -157,6 +423,7 @@ async def add_account(payload: AddAccountRequest):
             telegram_id=f"{DASHBOARD_ID_PREFIX}{uuid4()}",
             github_username=username,
             github_token_encrypted=encrypt_token(token),
+            owner_portal_user_id=scope_user.id,
         )
         db.add(account)
         await db.commit()
@@ -164,10 +431,10 @@ async def add_account(payload: AddAccountRequest):
     return _account_summary(account)
 
 
-@router.delete("/api/accounts/{account_id}", dependencies=[Depends(require_dashboard_auth)])
-async def delete_account(account_id: int):
+@router.delete("/api/accounts/{account_id}")
+async def delete_account(account_id: int, scope_user: PortalUser = Depends(current_scope_user)):
     async with AsyncSessionLocal() as db:
-        account = await _get_dashboard_account(db, account_id)
+        account = await _get_dashboard_account(db, account_id, scope_user)
         active = await db.execute(
             select(IssueJob.id)
             .where(
@@ -186,10 +453,10 @@ async def delete_account(account_id: int):
     return {"deleted": True}
 
 
-@router.get("/api/accounts/{account_id}/issues", dependencies=[Depends(require_dashboard_auth)])
-async def list_issues(account_id: int):
+@router.get("/api/accounts/{account_id}/issues")
+async def list_issues(account_id: int, scope_user: PortalUser = Depends(current_scope_user)):
     async with AsyncSessionLocal() as db:
-        account = await _get_dashboard_account(db, account_id)
+        account = await _get_dashboard_account(db, account_id, scope_user)
         token = decrypt_token(account.github_token_encrypted)
         issues = await _safe_github_call(gh.search_all_assigned_issues(token, account.github_username))
         jobs_result = await db.execute(
@@ -201,11 +468,13 @@ async def list_issues(account_id: int):
     return [_issue_summary(issue, jobs_by_key) for issue in issues]
 
 
-@router.post("/api/accounts/{account_id}/issues/fix", dependencies=[Depends(require_dashboard_auth)])
-async def fix_issue(account_id: int, payload: IssueRef):
+@router.post("/api/accounts/{account_id}/issues/fix")
+async def fix_issue(
+    account_id: int, payload: IssueRef, scope_user: PortalUser = Depends(current_scope_user)
+):
     _validate_repo(payload.repo)
     async with AsyncSessionLocal() as db:
-        account = await _get_dashboard_account(db, account_id)
+        account = await _get_dashboard_account(db, account_id, scope_user)
     token = decrypt_token(account.github_token_encrypted)
     issue = await _safe_github_call(gh.get_issue(token, payload.repo, payload.number))
     if not gh.is_open_and_assigned(issue, account.github_username):
@@ -216,14 +485,14 @@ async def fix_issue(account_id: int, payload: IssueRef):
     return {"queued": queued}
 
 
-@router.post(
-    "/api/accounts/{account_id}/issues/mark-ready", dependencies=[Depends(require_dashboard_auth)]
-)
-async def mark_issue_ready(account_id: int, payload: IssueRef):
+@router.post("/api/accounts/{account_id}/issues/mark-ready")
+async def mark_issue_ready(
+    account_id: int, payload: IssueRef, scope_user: PortalUser = Depends(current_scope_user)
+):
     """Force a draft PR ready for review without waiting on CI."""
     _validate_repo(payload.repo)
     async with AsyncSessionLocal() as db:
-        account = await _get_dashboard_account(db, account_id)
+        account = await _get_dashboard_account(db, account_id, scope_user)
         job_result = await db.execute(
             select(IssueJob).where(
                 IssueJob.telegram_id == account.telegram_id,
@@ -250,19 +519,21 @@ async def mark_issue_ready(account_id: int, payload: IssueRef):
     return {"ready": True}
 
 
-@router.post("/api/accounts/{account_id}/issues/fix-all", dependencies=[Depends(require_dashboard_auth)])
-async def fix_all_issues(account_id: int):
+@router.post("/api/accounts/{account_id}/issues/fix-all")
+async def fix_all_issues(account_id: int, scope_user: PortalUser = Depends(current_scope_user)):
     async with AsyncSessionLocal() as db:
-        account = await _get_dashboard_account(db, account_id)
+        account = await _get_dashboard_account(db, account_id, scope_user)
     discovered, queued = await queue_all_issues_for_account(account)
     return {"discovered": discovered, "queued": queued}
 
 
-@router.post("/api/accounts/{account_id}/issues/skip", dependencies=[Depends(require_dashboard_auth)])
-async def skip_issue(account_id: int, payload: IssueRef):
+@router.post("/api/accounts/{account_id}/issues/skip")
+async def skip_issue(
+    account_id: int, payload: IssueRef, scope_user: PortalUser = Depends(current_scope_user)
+):
     _validate_repo(payload.repo)
     async with AsyncSessionLocal() as db:
-        account = await _get_dashboard_account(db, account_id)
+        account = await _get_dashboard_account(db, account_id, scope_user)
         existing = await db.execute(
             select(IssueJob).where(
                 IssueJob.telegram_id == account.telegram_id,
@@ -289,11 +560,13 @@ async def skip_issue(account_id: int, payload: IssueRef):
     return {"skipped": True}
 
 
-@router.post("/api/accounts/{account_id}/issues/unskip", dependencies=[Depends(require_dashboard_auth)])
-async def unskip_issue(account_id: int, payload: IssueRef):
+@router.post("/api/accounts/{account_id}/issues/unskip")
+async def unskip_issue(
+    account_id: int, payload: IssueRef, scope_user: PortalUser = Depends(current_scope_user)
+):
     _validate_repo(payload.repo)
     async with AsyncSessionLocal() as db:
-        account = await _get_dashboard_account(db, account_id)
+        account = await _get_dashboard_account(db, account_id, scope_user)
         await db.execute(
             delete(IssueJob).where(
                 IssueJob.telegram_id == account.telegram_id,
@@ -306,10 +579,10 @@ async def unskip_issue(account_id: int, payload: IssueRef):
     return {"skipped": False}
 
 
-@router.get("/api/accounts/{account_id}/jobs", dependencies=[Depends(require_dashboard_auth)])
-async def list_jobs(account_id: int):
+@router.get("/api/accounts/{account_id}/jobs")
+async def list_jobs(account_id: int, scope_user: PortalUser = Depends(current_scope_user)):
     async with AsyncSessionLocal() as db:
-        account = await _get_dashboard_account(db, account_id)
+        account = await _get_dashboard_account(db, account_id, scope_user)
         result = await db.execute(
             select(IssueJob)
             .where(IssueJob.telegram_id == account.telegram_id)
