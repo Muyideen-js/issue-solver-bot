@@ -101,6 +101,8 @@ login on first startup, not a shared password for everyone. From
   they would, with a banner to exit back to your own view.
 - **Delete** someone — removes their login, GitHub-token tabs, and job
   history entirely.
+- **Reveal** a person's DeepSeek key, but only within one hour of them
+  saving it (see below).
 
 Regular (non-admin) people only ever see their own tabs; there's no
 self-signup. Sessions are a signed cookie (`ENCRYPTION_KEY` is reused as
@@ -109,10 +111,26 @@ only for local `http://localhost` testing.
 
 Each portal user opens **AI settings** and supplies their own DeepSeek API key.
 The key is encrypted at rest and is never included in normal settings responses.
-It is shared only by that person's own GitHub tabs. The admin user list shows
-whether a key is connected, but never exposes its value. While using **View as**,
-the admin can monitor and operate the person's GitHub jobs but cannot read or
-replace that person's AI key.
+It is shared only by that person's own GitHub tabs. While using **View as**, the
+admin can monitor and operate the person's GitHub jobs but cannot replace that
+person's AI key.
+
+### The one-hour key recovery window
+
+For one hour after someone saves a DeepSeek key, a **Reveal** button appears
+next to them in the admin user list, showing the key in plaintext. This exists
+so a person who pasted a key without keeping a copy can get it back instead of
+having to issue a new one from DeepSeek.
+
+After that hour the button disappears and the endpoint returns `410 Gone` — the
+key keeps working for solving, it just stops being readable. Saving a new key
+restarts the window; clearing the key ends it immediately. Every reveal is
+written to the server log with both usernames.
+
+Because this shows one person's credential to another, tell the people you
+provision that the window exists. If you'd rather it didn't, change
+`KEY_REVEAL_WINDOW` in [app/dashboard.py](app/dashboard.py) to
+`timedelta(0)` to close it permanently.
 
 ## Environment
 

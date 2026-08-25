@@ -40,6 +40,10 @@ LOGIN_ATTEMPTS: dict[str, deque] = defaultdict(deque)
 MAX_LOGIN_ATTEMPTS = 8
 LOGIN_WINDOW = timedelta(minutes=15)
 
+# How long after saving a DeepSeek key an admin can still read it back, so a
+# user who lost the key they pasted can recover it instead of reissuing one.
+KEY_REVEAL_WINDOW = timedelta(hours=1)
+
 
 class LoginRequest(BaseModel):
     username: str
@@ -173,12 +177,30 @@ def _account_summary(account: SolverUser) -> dict:
     }
 
 
+def _key_reveal_expires_at(user: PortalUser) -> datetime | None:
+    """When this user's saved DeepSeek key stops being readable by an admin."""
+    if not user.deepseek_api_key_encrypted or not user.deepseek_key_saved_at:
+        return None
+    return user.deepseek_key_saved_at + KEY_REVEAL_WINDOW
+
+
+def _key_is_revealable(user: PortalUser) -> bool:
+    expires_at = _key_reveal_expires_at(user)
+    return bool(expires_at and expires_at > datetime.utcnow())
+
+
 def _user_summary(user: PortalUser) -> dict:
+    expires_at = _key_reveal_expires_at(user)
+    revealable = _key_is_revealable(user)
     return {
         "id": user.id,
         "username": user.username,
         "must_change_password": user.must_change_password,
         "deepseek_connected": bool(user.deepseek_api_key_encrypted),
+        "deepseek_key_revealable": revealable,
+        "deepseek_key_reveal_expires_at": (
+            expires_at.isoformat() if expires_at and revealable else None
+        ),
         "created_at": user.created_at.isoformat() if user.created_at else None,
     }
 
@@ -371,8 +393,12 @@ async def save_deepseek_settings(
         fresh = await db.get(PortalUser, user.id)
         if payload.clear:
             fresh.deepseek_api_key_encrypted = ""
+            fresh.deepseek_key_saved_at = None
         elif api_key:
             fresh.deepseek_api_key_encrypted = encrypt_token(api_key)
+            # Restart the admin read-back window on every new key, so an
+            # older key never stays readable after being replaced.
+            fresh.deepseek_key_saved_at = datetime.utcnow()
         fresh.deepseek_model = model
 
         # Jobs stopped only because this user had no key can continue as soon
@@ -475,6 +501,38 @@ async def reset_password(
         user.must_change_password = True
         await db.commit()
     return {"reset": True}
+
+
+@router.get("/api/admin/users/{user_id}/deepseek-key")
+async def reveal_deepseek_key(user_id: int, admin: PortalUser = Depends(require_admin)):
+    """Read back a user's DeepSeek key within the short window after they saved it.
+
+    Recovery aid for someone who pasted a key and no longer has a copy; the
+    window closes on its own so a stored key isn't indefinitely readable.
+    """
+    async with AsyncSessionLocal() as db:
+        user = await _get_manageable_user(db, user_id)
+        if not user.deepseek_api_key_encrypted:
+            raise HTTPException(status_code=404, detail="This user has no saved DeepSeek key")
+        expires_at = _key_reveal_expires_at(user)
+        if not _key_is_revealable(user):
+            raise HTTPException(
+                status_code=410,
+                detail=(
+                    "The recovery window for this key has closed. Ask the user to save "
+                    "a new key if they need it back."
+                ),
+            )
+        api_key = decrypt_token(user.deepseek_api_key_encrypted)
+
+    logger.info(
+        "Admin %s revealed the DeepSeek key for user %s", admin.username, user.username
+    )
+    return {
+        "username": user.username,
+        "api_key": api_key,
+        "expires_at": expires_at.isoformat() if expires_at else None,
+    }
 
 
 @router.delete("/api/admin/users/{user_id}")

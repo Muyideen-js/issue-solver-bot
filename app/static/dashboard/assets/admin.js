@@ -10,6 +10,10 @@
   const resetHint = document.getElementById("reset-password-hint");
   const resetValueInput = document.getElementById("reset-password-value");
   const resetError = document.getElementById("reset-password-error");
+  const revealModal = document.getElementById("reveal-key-modal");
+  const revealHint = document.getElementById("reveal-key-hint");
+  const revealValue = document.getElementById("reveal-key-value");
+  const revealExpiry = document.getElementById("reveal-key-expiry");
 
   let resetTargetId = null;
 
@@ -58,7 +62,10 @@
           : '<span class="badge badge-ok">Active</span>'}</td>
         <td>${user.deepseek_connected
           ? '<span class="badge badge-ok">Connected</span>'
-          : '<span class="badge badge-warn">Key required</span>'}</td>
+          : '<span class="badge badge-warn">Key required</span>'}
+          ${user.deepseek_key_revealable
+            ? `<button class="btn btn-ready" data-reveal="${user.id}|${esc(user.username)}">Reveal</button>`
+            : ""}</td>
         <td>${esc((user.created_at || "").slice(0, 10))}</td>
         <td class="row-actions">
           <button class="btn" data-view-as="${user.id}">View as</button>
@@ -76,6 +83,30 @@
     usersBody.querySelectorAll("[data-delete]").forEach((btn) => {
       btn.addEventListener("click", () => onDelete(btn.dataset.delete, btn));
     });
+    usersBody.querySelectorAll("[data-reveal]").forEach((btn) => {
+      btn.addEventListener("click", () => onRevealKey(btn.dataset.reveal, btn));
+    });
+  }
+
+  async function onRevealKey(raw, btn) {
+    const [id, username] = raw.split("|");
+    btn.disabled = true;
+    try {
+      const result = await api(`/api/admin/users/${id}/deepseek-key`);
+      revealHint.textContent = `Saved by @${username}. Share it back through a secure channel.`;
+      revealValue.value = result.api_key;
+      revealExpiry.textContent = result.expires_at
+        ? `Readable until ${new Date(result.expires_at + "Z").toLocaleTimeString()}.`
+        : "";
+      revealModal.classList.remove("hidden");
+      revealValue.focus();
+      revealValue.select();
+    } catch (err) {
+      alert(err.message);
+      await loadUsers(); // an expired window should stop offering the button
+    } finally {
+      btn.disabled = false;
+    }
   }
 
   async function onViewAs(userId, btn) {
@@ -161,6 +192,18 @@
     resetModal.classList.add("hidden");
   });
   document.getElementById("reset-password-submit").addEventListener("click", submitReset);
+  document.getElementById("reveal-key-close").addEventListener("click", () => {
+    revealValue.value = "";
+    revealModal.classList.add("hidden");
+  });
+  document.getElementById("reveal-key-copy").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(revealValue.value);
+    } catch (_) {
+      revealValue.select(); // clipboard blocked (non-HTTPS or denied); let them copy manually
+      document.execCommand("copy");
+    }
+  });
   document.getElementById("logout-btn").addEventListener("click", async () => {
     await api("/api/logout", { method: "POST" }).catch(() => {});
     window.location.href = "/dashboard/login";

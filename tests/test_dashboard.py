@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -364,6 +365,112 @@ def test_admin_delete_cascades_accounts_and_jobs(monkeypatch):
     assert user is None
     assert solver is None
     assert job_row is None
+
+
+# --- Admin DeepSeek key recovery window ----------------------------------
+
+def _save_deepseek_key(test_client, api_key="sk-user-secret-key"):
+    return test_client.post(
+        "/api/settings/deepseek", json={"api_key": api_key, "model": "deepseek-v4-flash"}
+    )
+
+
+def _create_user_with_key(monkeypatch, username="keyuser", api_key="sk-user-secret-key"):
+    """Create a portal user, log in as them, and save a DeepSeek key."""
+    created = client.post(
+        "/api/admin/users",
+        json={"username": username, "temporary_password": "temp-password-1"},
+    ).json()
+    user_client = TestClient(app)
+    _login(user_client, username, "temp-password-1")
+    assert _save_deepseek_key(user_client, api_key).status_code == 200
+    return created
+
+
+async def _set_key_saved_at(user_id, saved_at):
+    async with AsyncSessionLocal() as db:
+        user = await db.get(PortalUser, user_id)
+        user.deepseek_key_saved_at = saved_at
+        await db.commit()
+
+
+def test_admin_can_reveal_a_recently_saved_key(monkeypatch):
+    _login_admin(monkeypatch)
+    created = _create_user_with_key(monkeypatch)
+
+    listed = client.get("/api/admin/users").json()
+    row = next(user for user in listed if user["id"] == created["id"])
+    assert row["deepseek_connected"] is True
+    assert row["deepseek_key_revealable"] is True
+
+    response = client.get(f"/api/admin/users/{created['id']}/deepseek-key")
+    assert response.status_code == 200, response.text
+    assert response.json()["api_key"] == "sk-user-secret-key"
+
+
+def test_reveal_window_closes_after_an_hour(monkeypatch):
+    _login_admin(monkeypatch)
+    created = _create_user_with_key(monkeypatch, username="expireduser")
+
+    asyncio.run(_set_key_saved_at(
+        created["id"], datetime.utcnow() - timedelta(hours=1, minutes=1)
+    ))
+
+    listed = client.get("/api/admin/users").json()
+    row = next(user for user in listed if user["id"] == created["id"])
+    assert row["deepseek_connected"] is True  # key still works for solving
+    assert row["deepseek_key_revealable"] is False  # but is no longer readable
+
+    response = client.get(f"/api/admin/users/{created['id']}/deepseek-key")
+    assert response.status_code == 410
+
+
+def test_saving_a_new_key_restarts_the_reveal_window(monkeypatch):
+    _login_admin(monkeypatch)
+    created = _create_user_with_key(monkeypatch, username="rotatinguser", api_key="sk-first-key")
+    asyncio.run(_set_key_saved_at(
+        created["id"], datetime.utcnow() - timedelta(hours=2)
+    ))
+    assert client.get(f"/api/admin/users/{created['id']}/deepseek-key").status_code == 410
+
+    user_client = TestClient(app)
+    _login(user_client, "rotatinguser", "temp-password-1")
+    assert _save_deepseek_key(user_client, "sk-second-key").status_code == 200
+
+    response = client.get(f"/api/admin/users/{created['id']}/deepseek-key")
+    assert response.status_code == 200
+    assert response.json()["api_key"] == "sk-second-key"
+
+
+def test_clearing_a_key_ends_the_reveal_window(monkeypatch):
+    _login_admin(monkeypatch)
+    created = _create_user_with_key(monkeypatch, username="clearinguser")
+
+    user_client = TestClient(app)
+    _login(user_client, "clearinguser", "temp-password-1")
+    cleared = user_client.post(
+        "/api/settings/deepseek", json={"model": "deepseek-v4-flash", "clear": True}
+    )
+    assert cleared.status_code == 200
+
+    response = client.get(f"/api/admin/users/{created['id']}/deepseek-key")
+    assert response.status_code == 404
+
+
+def test_reveal_key_requires_admin(monkeypatch):
+    _login_admin(monkeypatch)
+    created = _create_user_with_key(monkeypatch, username="victimuser")
+
+    other = client.post(
+        "/api/admin/users",
+        json={"username": "nosyuser", "temporary_password": "temp-password-1"},
+    ).json()
+    assert other["id"]
+
+    nosy_client = TestClient(app)
+    _login(nosy_client, "nosyuser", "temp-password-1")
+    response = nosy_client.get(f"/api/admin/users/{created['id']}/deepseek-key")
+    assert response.status_code == 403
 
 
 # --- Existing account/issue behavior, now behind a real login -------------
