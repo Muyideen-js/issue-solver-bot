@@ -66,7 +66,7 @@ async def _safe_github_call(coro):
         ) from exc
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"GitHub request failed: {exc}") from exc
-    except ValueError as exc:
+    except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -214,6 +214,40 @@ async def fix_issue(account_id: int, payload: IssueRef):
         )
     queued = await enqueue_issue(account, issue)
     return {"queued": queued}
+
+
+@router.post(
+    "/api/accounts/{account_id}/issues/mark-ready", dependencies=[Depends(require_dashboard_auth)]
+)
+async def mark_issue_ready(account_id: int, payload: IssueRef):
+    """Force a draft PR ready for review without waiting on CI."""
+    _validate_repo(payload.repo)
+    async with AsyncSessionLocal() as db:
+        account = await _get_dashboard_account(db, account_id)
+        job_result = await db.execute(
+            select(IssueJob).where(
+                IssueJob.telegram_id == account.telegram_id,
+                IssueJob.repo_full_name == payload.repo,
+                IssueJob.issue_number == payload.number,
+            )
+        )
+        job = job_result.scalar_one_or_none()
+        if not job or not job.draft_pr_number:
+            raise HTTPException(status_code=404, detail="No draft PR is tracked for this issue")
+
+        token = decrypt_token(account.github_token_encrypted)
+        pull_request = await _safe_github_call(gh.get_pr(token, payload.repo, job.draft_pr_number))
+        if pull_request.get("state") != "open":
+            raise HTTPException(status_code=409, detail="That PR is no longer open")
+
+        if pull_request.get("draft", False):
+            await _safe_github_call(gh.mark_pr_ready(token, pull_request["node_id"]))
+
+        job.status = "DONE"
+        job.head_sha = pull_request["head"]["sha"]
+        job.last_error = "Manually marked ready for review by operator"
+        await db.commit()
+    return {"ready": True}
 
 
 @router.post("/api/accounts/{account_id}/issues/fix-all", dependencies=[Depends(require_dashboard_auth)])

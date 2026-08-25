@@ -6,7 +6,8 @@
     activeAccountId: null,
     issues: [],
     jobs: [],
-    loading: false,
+    cache: {}, // accountId -> { issues, jobs }, shown instantly while a fresh fetch runs
+    loadingAccountId: null,
   };
 
   const tabsEl = document.getElementById("tabs");
@@ -83,9 +84,7 @@
     tabsEl.querySelectorAll(".tab").forEach((el) => {
       el.addEventListener("click", (event) => {
         if (event.target.dataset.remove) return;
-        state.activeAccountId = Number(el.dataset.id);
-        renderTabs();
-        refreshPanel();
+        activateAccount(Number(el.dataset.id));
       });
     });
     tabsEl.querySelectorAll("[data-remove]").forEach((el) => {
@@ -95,6 +94,7 @@
         if (!confirm("Remove this account? This does not close any GitHub issues.")) return;
         try {
           await api(`/api/accounts/${id}`, { method: "DELETE" });
+          delete state.cache[id];
           await loadAccounts();
         } catch (err) {
           alert(err.message);
@@ -103,25 +103,43 @@
     });
   }
 
+  function activateAccount(accountId) {
+    state.activeAccountId = accountId;
+    renderTabs();
+    const cached = state.cache[accountId];
+    if (cached) {
+      state.issues = cached.issues;
+      state.jobs = cached.jobs;
+      renderPanel();
+    }
+    refreshPanel();
+  }
+
   async function refreshPanel() {
     if (!state.activeAccountId) {
       panelEl.innerHTML = `<p class="empty">Add a GitHub account to see its assigned issues.</p>`;
       return;
     }
-    if (state.loading) return;
-    state.loading = true;
+    const accountId = state.activeAccountId;
+    if (state.loadingAccountId === accountId) return;
+    const hadCache = Boolean(state.cache[accountId]);
+    state.loadingAccountId = accountId;
     try {
       const [issues, jobs] = await Promise.all([
-        api(`/api/accounts/${state.activeAccountId}/issues`),
-        api(`/api/accounts/${state.activeAccountId}/jobs`),
+        api(`/api/accounts/${accountId}/issues`),
+        api(`/api/accounts/${accountId}/jobs`),
       ]);
+      state.cache[accountId] = { issues, jobs };
+      if (state.activeAccountId !== accountId) return; // user switched tabs meanwhile
       state.issues = issues;
       state.jobs = jobs;
       renderPanel();
     } catch (err) {
-      panelEl.innerHTML = `<p class="error">${esc(err.message)}</p>`;
+      if (state.activeAccountId === accountId && !hadCache) {
+        panelEl.innerHTML = `<p class="error">${esc(err.message)}</p>`;
+      }
     } finally {
-      state.loading = false;
+      if (state.loadingAccountId === accountId) state.loadingAccountId = null;
     }
   }
 
@@ -133,6 +151,7 @@
       const canFix = issue.status === "NOT_QUEUED" || issue.status === "FAILED";
       const canSkip = issue.status === "NOT_QUEUED";
       const canUnskip = issue.status === "SKIPPED_BY_USER";
+      const canMarkReady = Boolean(issue.pr_url) && issue.status !== "DONE";
       const prLink = issue.pr_url
         ? `<a href="${esc(safeHref(issue.pr_url))}" target="_blank" rel="noopener">PR</a>` : "";
       return `
@@ -145,18 +164,23 @@
             ${canFix ? `<button class="btn btn-primary" data-fix="${esc(issue.repo)}|${issue.number}|${esc(issue.title)}|${esc(issue.url)}">Fix</button>` : ""}
             ${canSkip ? `<button class="btn" data-skip="${esc(issue.repo)}|${issue.number}|${esc(issue.title)}|${esc(issue.url)}">Skip</button>` : ""}
             ${canUnskip ? `<button class="btn" data-unskip="${esc(issue.repo)}|${issue.number}">Unskip</button>` : ""}
+            ${canMarkReady ? `<button class="btn" data-ready="${esc(issue.repo)}|${issue.number}">Ready for review</button>` : ""}
           </td>
         </tr>`;
     }).join("");
 
-    const jobRows = state.jobs.map((job) => `
+    const jobRows = state.jobs.map((job) => {
+      const canMarkReady = Boolean(job.pr_url) && job.status !== "DONE";
+      return `
       <tr>
         <td><a href="${esc(safeHref(job.issue_url))}" target="_blank" rel="noopener">${esc(job.title)}</a></td>
         <td>${esc(job.repo)}#${esc(job.number)}</td>
         <td>${statusBadge(job.status)}</td>
         <td>${job.pr_url ? `<a href="${esc(safeHref(job.pr_url))}" target="_blank" rel="noopener">PR</a>` : ""}</td>
         <td>${esc((job.last_error || "").slice(0, 140))}</td>
-      </tr>`).join("");
+        <td>${canMarkReady ? `<button class="btn" data-ready="${esc(job.repo)}|${job.number}">Ready for review</button>` : ""}</td>
+      </tr>`;
+    }).join("");
 
     panelEl.innerHTML = `
       <div class="panel-header">
@@ -172,8 +196,8 @@
       </table>
       <div class="section-title">Job history</div>
       <table>
-        <thead><tr><th>Issue</th><th>Repo</th><th>Status</th><th>PR</th><th>Last note</th></tr></thead>
-        <tbody>${jobRows || `<tr><td colspan="5" class="empty">No jobs yet.</td></tr>`}</tbody>
+        <thead><tr><th>Issue</th><th>Repo</th><th>Status</th><th>PR</th><th>Last note</th><th></th></tr></thead>
+        <tbody>${jobRows || `<tr><td colspan="6" class="empty">No jobs yet.</td></tr>`}</tbody>
       </table>
     `;
 
@@ -187,6 +211,9 @@
     });
     panelEl.querySelectorAll("[data-unskip]").forEach((btn) => {
       btn.addEventListener("click", () => onUnskip(btn.dataset.unskip, btn));
+    });
+    panelEl.querySelectorAll("[data-ready]").forEach((btn) => {
+      btn.addEventListener("click", () => onMarkReady(btn.dataset.ready, btn));
     });
   }
 
@@ -230,6 +257,22 @@
     btn.disabled = true;
     try {
       await api(`/api/accounts/${state.activeAccountId}/issues/unskip`, {
+        method: "POST",
+        body: JSON.stringify({ repo, number: Number(number) }),
+      });
+      await refreshPanel();
+    } catch (err) {
+      alert(err.message);
+      btn.disabled = false;
+    }
+  }
+
+  async function onMarkReady(raw, btn) {
+    const [repo, number] = raw.split("|");
+    if (!confirm("Mark this PR ready for review now, without waiting for CI?")) return;
+    btn.disabled = true;
+    try {
+      await api(`/api/accounts/${state.activeAccountId}/issues/mark-ready`, {
         method: "POST",
         body: JSON.stringify({ repo, number: Number(number) }),
       });

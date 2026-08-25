@@ -80,7 +80,9 @@ filter. Click **Fix** on an issue (or **Fix all**) to queue it through the
 exact same clone → implement → draft PR → CI-repair pipeline Telegram uses.
 **Skip** marks an issue as intentionally not being worked, without ever
 writing to GitHub (no auto-close) — the bot never takes action on an issue
-it decided not to fix.
+it decided not to fix. **Ready for review** overrides the normal
+CI-gated flow and force-marks a draft PR ready immediately, for when you've
+already reviewed it yourself and don't want to wait on CI.
 
 A dashboard account is created directly on `/dashboard`, independent of the
 Telegram-connected owner; it never participates in the 5-minute label-gated
@@ -109,6 +111,7 @@ ASSIGNMENT_POLL_SECONDS=300
 SOLVER_MAX_TURNS=30
 SOLVER_REPAIR_MAX_TURNS=16
 SOLVER_MAX_REPAIR_ATTEMPTS=2
+SOLVER_CONCURRENCY=3
 DATABASE_URL=postgresql://user:password@host/database
 DASHBOARD_USERNAME=admin
 DASHBOARD_PASSWORD=
@@ -137,5 +140,9 @@ Create a separate Render web service and PostgreSQL database for this project.
 Set the environment values above, use `pip install -r requirements.txt` as the
 build command, and use the included `Procfile` start command. Run exactly one
 instance because Telegram long polling and the durable worker are single-instance.
+`SOLVER_CONCURRENCY` (default 3) runs that many issues in parallel within the
+one instance instead of scaling instances — `_claim_next_job` locks rows with
+`skip_locked`, so raising it is safe as long as the database's connection pool
+can cover it.
 The root URL supports both `GET` and lightweight `HEAD` requests so free uptime
 monitors can check the service without downloading a response body.

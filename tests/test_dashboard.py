@@ -161,6 +161,78 @@ def test_fix_issue_enqueues_job(monkeypatch):
     assert jobs[0]["status"] == "QUEUED"
 
 
+def test_mark_ready_marks_a_draft_pr_ready_and_completes_the_job(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "secret")
+    account = asyncio.run(_add_dashboard_account())
+    asyncio.run(_add_job(
+        account.telegram_id, "o/r", 9, status="WAITING_CI",
+        draft_pr_number=42, draft_pr_url="https://github.com/o/r/pull/42",
+    ))
+
+    async def fake_get_pr(token, repo, number):
+        return {
+            "state": "open", "draft": True, "node_id": "PR_kwabc",
+            "head": {"sha": "newsha"},
+        }
+
+    marked = []
+
+    async def fake_mark_pr_ready(token, node_id):
+        marked.append(node_id)
+
+    monkeypatch.setattr(gh, "get_pr", fake_get_pr)
+    monkeypatch.setattr(gh, "mark_pr_ready", fake_mark_pr_ready)
+
+    response = client.post(
+        f"/api/accounts/{account.id}/issues/mark-ready",
+        json={"repo": "o/r", "number": 9},
+        auth=("admin", "secret"),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json() == {"ready": True}
+    assert marked == ["PR_kwabc"]
+
+    jobs = client.get(f"/api/accounts/{account.id}/jobs", auth=("admin", "secret")).json()
+    assert jobs[0]["status"] == "DONE"
+
+
+def test_mark_ready_skips_the_mutation_when_already_ready(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "secret")
+    account = asyncio.run(_add_dashboard_account())
+    asyncio.run(_add_job(
+        account.telegram_id, "o/r", 10, status="WAITING_CI",
+        draft_pr_number=43, draft_pr_url="https://github.com/o/r/pull/43",
+    ))
+
+    async def fake_get_pr(token, repo, number):
+        return {"state": "open", "draft": False, "node_id": "PR_x", "head": {"sha": "sha"}}
+
+    async def fail_if_called(token, node_id):
+        raise AssertionError("mark_pr_ready should not be called when already ready")
+
+    monkeypatch.setattr(gh, "get_pr", fake_get_pr)
+    monkeypatch.setattr(gh, "mark_pr_ready", fail_if_called)
+
+    response = client.post(
+        f"/api/accounts/{account.id}/issues/mark-ready",
+        json={"repo": "o/r", "number": 10},
+        auth=("admin", "secret"),
+    )
+    assert response.status_code == 200
+
+
+def test_mark_ready_requires_a_tracked_draft_pr(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "secret")
+    account = asyncio.run(_add_dashboard_account())
+
+    response = client.post(
+        f"/api/accounts/{account.id}/issues/mark-ready",
+        json={"repo": "o/r", "number": 99},
+        auth=("admin", "secret"),
+    )
+    assert response.status_code == 404
+
+
 def test_fix_all_queues_every_unrestricted_issue(monkeypatch):
     monkeypatch.setenv("DASHBOARD_PASSWORD", "secret")
     account = asyncio.run(_add_dashboard_account())

@@ -153,7 +153,18 @@ async def assignment_poller(stop_event: asyncio.Event) -> None:
 
 
 async def solver_worker(stop_event: asyncio.Event) -> None:
+    """Run several concurrent solving lanes so many queued issues progress at once.
+
+    _claim_next_job locks its row with skip_locked, so concurrent lanes never
+    grab the same job.
+    """
     await _recover_interrupted_jobs()
+    concurrency = max(1, int(os.getenv("SOLVER_CONCURRENCY", "3")))
+    lanes = [asyncio.create_task(_solver_lane(stop_event)) for _ in range(concurrency)]
+    await asyncio.gather(*lanes)
+
+
+async def _solver_lane(stop_event: asyncio.Event) -> None:
     while not stop_event.is_set():
         job_id = await _claim_next_job()
         if job_id is None:
