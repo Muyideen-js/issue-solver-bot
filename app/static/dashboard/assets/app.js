@@ -370,7 +370,7 @@
       const settings = await api("/api/settings/deepseek");
       deepseekModelInput.value = settings.model || "deepseek-v4-flash";
       deepseekStatusEl.textContent = settings.connected
-        ? "Connected — your solver jobs use your private key."
+        ? "Connected — your solver jobs use your own key."
         : "Not connected — add a key before starting solver jobs.";
       deepseekStatusEl.className = `connection-status ${settings.connected ? "connected" : "missing"}`;
       deepseekRemoveBtn.classList.toggle("hidden", !settings.connected);
@@ -396,7 +396,7 @@
         }),
       });
       deepseekStatusEl.textContent = result.connected
-        ? "Connected — your solver jobs use your private key."
+        ? "Connected — your solver jobs use your own key."
         : "Not connected — add a key before starting solver jobs.";
       deepseekStatusEl.className = `connection-status ${result.connected ? "connected" : "missing"}`;
       deepseekKeyInput.value = "";
