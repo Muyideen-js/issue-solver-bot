@@ -196,3 +196,28 @@ async def test_process_job_enforces_program_label_gate_for_telegram_accounts(mon
     async with AsyncSessionLocal() as db:
         job = await db.get(IssueJob, job_id)
     assert job.status == "SKIPPED"
+
+
+@pytest.mark.asyncio
+async def test_enqueue_issue_recognizes_work_already_done_on_another_channel():
+    """The same GitHub account connected via Telegram and a dashboard tab shares
+    one job history, so a Telegram-solved issue isn't re-solved from the dashboard."""
+    telegram_user = await _add_user("123456789", username="sharedgh")
+    dashboard_user = await _add_user(f"{DASHBOARD_ID_PREFIX}abc", username="sharedgh")
+    await _add_job(telegram_user.telegram_id, "octo/repo", 42, status="DONE")
+
+    issue = {
+        "number": 42, "title": "Already fixed via Telegram",
+        "html_url": "https://github.com/octo/repo/issues/42",
+        "repository_url": "https://api.github.com/repos/octo/repo",
+    }
+    queued = await solver_queue.enqueue_issue(dashboard_user, issue)
+
+    assert queued is False
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(IssueJob).where(IssueJob.repo_full_name == "octo/repo", IssueJob.issue_number == 42)
+        )
+        jobs = result.scalars().all()
+    assert len(jobs) == 1  # no duplicate job created under the dashboard channel
+    assert jobs[0].telegram_id == telegram_user.telegram_id

@@ -20,6 +20,7 @@ from app.models.database import (
     PortalUser,
     SolverUser,
     is_dashboard_user,
+    telegram_ids_sharing_username,
 )
 from app.services import github as gh
 from app.services.crypto import decrypt_token, encrypt_token
@@ -459,8 +460,9 @@ async def list_issues(account_id: int, scope_user: PortalUser = Depends(current_
         account = await _get_dashboard_account(db, account_id, scope_user)
         token = decrypt_token(account.github_token_encrypted)
         issues = await _safe_github_call(gh.search_all_assigned_issues(token, account.github_username))
+        sibling_ids = await telegram_ids_sharing_username(db, account.github_username)
         jobs_result = await db.execute(
-            select(IssueJob).where(IssueJob.telegram_id == account.telegram_id)
+            select(IssueJob).where(IssueJob.telegram_id.in_(sibling_ids))
         )
         jobs_by_key = {
             (job.repo_full_name, job.issue_number): job for job in jobs_result.scalars()
@@ -493,14 +495,15 @@ async def mark_issue_ready(
     _validate_repo(payload.repo)
     async with AsyncSessionLocal() as db:
         account = await _get_dashboard_account(db, account_id, scope_user)
+        sibling_ids = await telegram_ids_sharing_username(db, account.github_username)
         job_result = await db.execute(
             select(IssueJob).where(
-                IssueJob.telegram_id == account.telegram_id,
+                IssueJob.telegram_id.in_(sibling_ids),
                 IssueJob.repo_full_name == payload.repo,
                 IssueJob.issue_number == payload.number,
             )
         )
-        job = job_result.scalar_one_or_none()
+        job = job_result.scalars().first()
         if not job or not job.draft_pr_number:
             raise HTTPException(status_code=404, detail="No draft PR is tracked for this issue")
 
@@ -534,14 +537,15 @@ async def skip_issue(
     _validate_repo(payload.repo)
     async with AsyncSessionLocal() as db:
         account = await _get_dashboard_account(db, account_id, scope_user)
+        sibling_ids = await telegram_ids_sharing_username(db, account.github_username)
         existing = await db.execute(
             select(IssueJob).where(
-                IssueJob.telegram_id == account.telegram_id,
+                IssueJob.telegram_id.in_(sibling_ids),
                 IssueJob.repo_full_name == payload.repo,
                 IssueJob.issue_number == payload.number,
             )
         )
-        job = existing.scalar_one_or_none()
+        job = existing.scalars().first()
         if job:
             if job.status != "SKIPPED_BY_USER":
                 raise HTTPException(
@@ -583,9 +587,10 @@ async def unskip_issue(
 async def list_jobs(account_id: int, scope_user: PortalUser = Depends(current_scope_user)):
     async with AsyncSessionLocal() as db:
         account = await _get_dashboard_account(db, account_id, scope_user)
+        sibling_ids = await telegram_ids_sharing_username(db, account.github_username)
         result = await db.execute(
             select(IssueJob)
-            .where(IssueJob.telegram_id == account.telegram_id)
+            .where(IssueJob.telegram_id.in_(sibling_ids))
             .order_by(IssueJob.updated_at.desc())
         )
         jobs = result.scalars().all()

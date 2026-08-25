@@ -10,7 +10,13 @@ from datetime import datetime, timedelta
 from sqlalchemy import case, select
 from sqlalchemy.exc import IntegrityError
 
-from app.models.database import AsyncSessionLocal, IssueJob, SolverUser, is_dashboard_user
+from app.models.database import (
+    AsyncSessionLocal,
+    IssueJob,
+    SolverUser,
+    is_dashboard_user,
+    telegram_ids_sharing_username,
+)
 from app.services import github as gh
 from app.services.coding_agent import CodingAgentError, solve_issue
 from app.services.crypto import decrypt_token
@@ -26,14 +32,18 @@ async def enqueue_issue(user: SolverUser, issue: dict) -> bool:
     if not repo or not number:
         return False
     async with AsyncSessionLocal() as db:
+        # Match on every telegram_id connected to this GitHub account (Telegram
+        # owner and/or any dashboard tab), not just this specific channel, so an
+        # issue already solved through one channel isn't solved again by another.
+        sibling_ids = await telegram_ids_sharing_username(db, user.github_username)
         result = await db.execute(
             select(IssueJob).where(
-                IssueJob.telegram_id == user.telegram_id,
+                IssueJob.telegram_id.in_(sibling_ids),
                 IssueJob.repo_full_name == repo,
                 IssueJob.issue_number == int(number),
             )
         )
-        existing = result.scalar_one_or_none()
+        existing = result.scalars().first()
         if existing:
             if existing.status == "FAILED":
                 _reset_job_for_retry(existing, reason="Failed issue requeued")

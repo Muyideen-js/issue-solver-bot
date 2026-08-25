@@ -115,8 +115,22 @@
       state.issues = cached.issues;
       state.jobs = cached.jobs;
       renderPanel();
+    } else {
+      renderLoadingState();
     }
     refreshPanel();
+  }
+
+  function renderLoadingState() {
+    panelEl.innerHTML = `
+      <div class="panel-header"><h2>Loading…</h2></div>
+      <div class="skeleton">
+        <div class="skeleton-row"></div>
+        <div class="skeleton-row"></div>
+        <div class="skeleton-row"></div>
+        <div class="skeleton-row"></div>
+      </div>
+    `;
   }
 
   async function refreshPanel() {

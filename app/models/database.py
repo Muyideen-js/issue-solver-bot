@@ -2,7 +2,7 @@
 import os
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text, UniqueConstraint, inspect, select, text
+from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text, UniqueConstraint, func, inspect, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -128,6 +128,18 @@ async def _add_missing_columns() -> None:
 def is_dashboard_user(user: SolverUser) -> bool:
     """Dashboard-added accounts carry a synthetic telegram_id, not a real Telegram ID."""
     return user.telegram_id.startswith(DASHBOARD_ID_PREFIX)
+
+
+async def telegram_ids_sharing_username(db, github_username: str) -> list[str]:
+    """Every telegram_id (Telegram owner and/or any dashboard tab) connected to
+    the same GitHub account, so a job solved through one channel is recognized
+    by the others instead of being solved again."""
+    result = await db.execute(
+        select(SolverUser.telegram_id).where(
+            func.lower(SolverUser.github_username) == github_username.lower()
+        )
+    )
+    return [row[0] for row in result.all()]
 
 
 async def bootstrap_admin() -> PortalUser | None:
