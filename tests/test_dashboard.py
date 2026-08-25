@@ -362,6 +362,68 @@ def test_issues_endpoint_joins_job_status(monkeypatch):
     assert issues[0]["labels"] == ["bug"]
 
 
+def test_dashboard_prefers_completed_telegram_job_over_stale_dashboard_duplicate(monkeypatch):
+    admin = _login_admin(monkeypatch)
+    account = asyncio.run(_add_dashboard_account(admin.id, username="shared-user"))
+
+    async def add_telegram_owner_and_jobs():
+        async with AsyncSessionLocal() as db:
+            telegram_user = SolverUser(
+                telegram_id="987654321",
+                github_username="shared-user",
+                github_token_encrypted=encrypt_token("telegram-token"),
+            )
+            db.add(telegram_user)
+            await db.commit()
+        await _add_job(
+            account.telegram_id, "o/r", 6, status="NEEDS_TESTS",
+            draft_pr_number=10, draft_pr_url="https://github.com/o/r/pull/10",
+        )
+        await _add_job(
+            telegram_user.telegram_id, "o/r", 6, status="DONE",
+            draft_pr_number=10, draft_pr_url="https://github.com/o/r/pull/10",
+        )
+
+    asyncio.run(add_telegram_owner_and_jobs())
+
+    async def fake_search(token, username):
+        return [{
+            "id": 6, "number": 6, "title": "Solved through Telegram",
+            "html_url": "https://github.com/o/r/issues/6",
+            "repository_url": "https://api.github.com/repos/o/r",
+            "labels": [],
+        }]
+
+    monkeypatch.setattr(gh, "search_all_assigned_issues", fake_search)
+
+    issues = client.get(f"/api/accounts/{account.id}/issues").json()
+    jobs = client.get(f"/api/accounts/{account.id}/jobs").json()
+
+    assert issues[0]["status"] == "DONE"
+    assert len(jobs) == 1
+    assert jobs[0]["status"] == "DONE"
+
+
+def test_dashboard_does_not_show_needs_ci_without_a_tracked_pr(monkeypatch):
+    admin = _login_admin(monkeypatch)
+    account = asyncio.run(_add_dashboard_account(admin.id, username="legacy-user"))
+    asyncio.run(_add_job(account.telegram_id, "o/r", 8, status="NEEDS_TESTS"))
+
+    async def fake_search(token, username):
+        return [{
+            "id": 8, "number": 8, "title": "Legacy inconsistent state",
+            "html_url": "https://github.com/o/r/issues/8",
+            "repository_url": "https://api.github.com/repos/o/r",
+            "labels": [],
+        }]
+
+    monkeypatch.setattr(gh, "search_all_assigned_issues", fake_search)
+
+    issue = client.get(f"/api/accounts/{account.id}/issues").json()[0]
+    assert issue["status"] == "NEEDS_REVIEW"
+    assert issue["pr_url"] is None
+
+
 def test_fix_issue_enqueues_job(monkeypatch):
     admin = _login_admin(monkeypatch)
     account = asyncio.run(_add_dashboard_account(admin.id))
@@ -391,7 +453,7 @@ def test_mark_ready_marks_a_draft_pr_ready_and_completes_the_job(monkeypatch):
     admin = _login_admin(monkeypatch)
     account = asyncio.run(_add_dashboard_account(admin.id))
     asyncio.run(_add_job(
-        account.telegram_id, "o/r", 9, status="WAITING_CI",
+        account.telegram_id, "o/r", 9, status="NEEDS_TESTS",
         draft_pr_number=42, draft_pr_url="https://github.com/o/r/pull/42",
     ))
 

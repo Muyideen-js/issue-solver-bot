@@ -13,18 +13,30 @@
 </div>
 
 <header class="topbar">
-  <h1>Issue Solver Dashboard</h1>
-  <div class="inline">
+  <div class="brand">
+    <span class="brand-mark">IS</span>
+    <div>
+      <h1>Issue Solver</h1>
+      <p>Build, test, and track your assigned GitHub work.</p>
+    </div>
+  </div>
+  <div class="topbar-actions">
     <a id="admin-link" href="/dashboard/admin" class="btn hidden">Admin</a>
-    <button id="add-account-btn" class="btn btn-primary">+ Add account</button>
+    <button id="add-account-btn" class="btn btn-primary">Add GitHub account</button>
     <button id="logout-btn" class="btn">Log out</button>
   </div>
 </header>
 
-<nav id="tabs" class="tabs"></nav>
+<section class="account-bar">
+  <span class="account-bar-label">Connected accounts</span>
+  <nav id="tabs" class="tabs"></nav>
+</section>
 
 <main id="panel" class="panel">
-  <p class="empty">Add a GitHub account to see its assigned issues.</p>
+  <div class="empty-state">
+    <strong>No GitHub account selected</strong>
+    <span>Add an account to see assigned issues and solver activity.</span>
+  </div>
 </main>
 
 <div id="add-account-modal" class="modal hidden">

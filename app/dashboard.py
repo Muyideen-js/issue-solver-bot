@@ -175,10 +175,71 @@ def _user_summary(user: PortalUser) -> dict:
     }
 
 
+JOB_STATUS_PRIORITY = {
+    # A completed record is authoritative when older dashboard/Telegram rows
+    # exist for the same GitHub issue. Active work wins over stale failures.
+    "DONE": 100,
+    "PROCESSING": 90,
+    "WAITING_CI": 80,
+    "QUEUED": 70,
+    "NEEDS_REVIEW": 60,
+    "NEEDS_TESTS": 50,
+    "FAILED": 40,
+    "SKIPPED_BY_USER": 20,
+    "SKIPPED": 10,
+}
+
+
+def _job_sort_key(job: IssueJob) -> tuple[int, float, int]:
+    changed_at = job.updated_at or job.created_at
+    timestamp = changed_at.timestamp() if changed_at else 0.0
+    return JOB_STATUS_PRIORITY.get(job.status, 0), timestamp, job.id or 0
+
+
+def _coalesce_jobs(jobs: list[IssueJob]) -> list[IssueJob]:
+    """Return one authoritative shared job per GitHub issue.
+
+    Older deployments could create one row through Telegram and another
+    through the dashboard. Keeping both in the response made a completed
+    Telegram job look unfinished in the dashboard.
+    """
+    by_issue: dict[tuple[str, int], IssueJob] = {}
+    for job in jobs:
+        key = (job.repo_full_name.lower(), job.issue_number)
+        current = by_issue.get(key)
+        if current is None or _job_sort_key(job) > _job_sort_key(current):
+            by_issue[key] = job
+    return sorted(
+        by_issue.values(),
+        key=lambda job: job.updated_at or job.created_at or datetime.min,
+        reverse=True,
+    )
+
+
+def _job_pr_url(job: IssueJob | None) -> str | None:
+    if not job:
+        return None
+    if job.draft_pr_url:
+        return job.draft_pr_url
+    if job.draft_pr_number:
+        return f"https://github.com/{job.repo_full_name}/pull/{job.draft_pr_number}"
+    return None
+
+
+def _display_status(job: IssueJob | None) -> str:
+    if not job:
+        return "NOT_QUEUED"
+    # A CI state without a tracked PR is inconsistent legacy data. Do not tell
+    # the operator that CI is missing when there is no PR on which CI could run.
+    if job.status in {"WAITING_CI", "NEEDS_TESTS"} and not _job_pr_url(job):
+        return "NEEDS_REVIEW"
+    return job.status
+
+
 def _issue_summary(issue: dict, jobs_by_key: dict[tuple[str, int], IssueJob]) -> dict:
     repo = gh.repo_from_issue(issue)
     number = issue.get("number")
-    job = jobs_by_key.get((repo, number)) if repo and number else None
+    job = jobs_by_key.get((repo.lower(), number)) if repo and number else None
     return {
         "repo": repo,
         "number": number,
@@ -188,8 +249,8 @@ def _issue_summary(issue: dict, jobs_by_key: dict[tuple[str, int], IssueJob]) ->
             item.get("name") if isinstance(item, dict) else str(item)
             for item in issue.get("labels", [])
         ],
-        "status": job.status if job else "NOT_QUEUED",
-        "pr_url": job.draft_pr_url if job else None,
+        "status": _display_status(job),
+        "pr_url": _job_pr_url(job),
     }
 
 
@@ -199,8 +260,8 @@ def _job_summary(job: IssueJob) -> dict:
         "number": job.issue_number,
         "title": job.issue_title,
         "issue_url": job.issue_url,
-        "status": job.status,
-        "pr_url": job.draft_pr_url,
+        "status": _display_status(job),
+        "pr_url": _job_pr_url(job),
         "last_error": job.last_error,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
     }
@@ -464,8 +525,9 @@ async def list_issues(account_id: int, scope_user: PortalUser = Depends(current_
         jobs_result = await db.execute(
             select(IssueJob).where(IssueJob.telegram_id.in_(sibling_ids))
         )
+        shared_jobs = _coalesce_jobs(list(jobs_result.scalars()))
         jobs_by_key = {
-            (job.repo_full_name, job.issue_number): job for job in jobs_result.scalars()
+            (job.repo_full_name.lower(), job.issue_number): job for job in shared_jobs
         }
     return [_issue_summary(issue, jobs_by_key) for issue in issues]
 
@@ -503,7 +565,8 @@ async def mark_issue_ready(
                 IssueJob.issue_number == payload.number,
             )
         )
-        job = job_result.scalars().first()
+        shared_jobs = _coalesce_jobs(list(job_result.scalars()))
+        job = shared_jobs[0] if shared_jobs else None
         if not job or not job.draft_pr_number:
             raise HTTPException(status_code=404, detail="No draft PR is tracked for this issue")
 
@@ -593,5 +656,5 @@ async def list_jobs(account_id: int, scope_user: PortalUser = Depends(current_sc
             .where(IssueJob.telegram_id.in_(sibling_ids))
             .order_by(IssueJob.updated_at.desc())
         )
-        jobs = result.scalars().all()
+        jobs = _coalesce_jobs(list(result.scalars()))
     return [_job_summary(job) for job in jobs]

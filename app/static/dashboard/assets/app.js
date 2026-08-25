@@ -57,8 +57,8 @@
       FAILED: ["badge-danger", "Failed"],
       SKIPPED: ["badge-danger", "Skipped"],
       SKIPPED_BY_USER: ["", "Skipped"],
-      NEEDS_REVIEW: ["badge-warn", "Needs review"],
-      NEEDS_TESTS: ["badge-warn", "Needs CI"],
+      NEEDS_REVIEW: ["badge-warn", "Needs attention"],
+      NEEDS_TESTS: ["badge-warn", "No CI checks"],
     };
     const [cls, label] = map[status] || ["", status];
     return `<span class="badge ${cls}">${esc(label)}</span>`;
@@ -162,26 +162,35 @@
   }
 
   function renderPanel() {
+    const activeAccount = state.accounts.find((account) => account.id === state.activeAccountId);
+    const activeStatuses = new Set(["QUEUED", "PROCESSING", "WAITING_CI"]);
+    const attentionStatuses = new Set(["FAILED", "NEEDS_REVIEW", "NEEDS_TESTS"]);
+    const solvedCount = state.jobs.filter((job) => job.status === "DONE").length;
+    const activeCount = state.jobs.filter((job) => activeStatuses.has(job.status)).length;
+    const attentionCount = state.jobs.filter((job) => attentionStatuses.has(job.status)).length;
+    const prCount = state.jobs.filter((job) => Boolean(job.pr_url)).length;
     const issueRows = state.issues.map((issue) => {
       const labels = (issue.labels || [])
         .map((label) => `<span class="label-chip">${esc(label)}</span>`)
         .join("");
-      const canFix = issue.status === "NOT_QUEUED" || issue.status === "FAILED";
+      const canFix = issue.status === "NOT_QUEUED" || issue.status === "FAILED" ||
+        (issue.status === "NEEDS_REVIEW" && !issue.pr_url);
       const canSkip = issue.status === "NOT_QUEUED";
       const canUnskip = issue.status === "SKIPPED_BY_USER";
       const canMarkReady = Boolean(issue.pr_url) && issue.status !== "DONE";
       const prLink = issue.pr_url
-        ? `<a href="${esc(safeHref(issue.pr_url))}" target="_blank" rel="noopener">PR</a>` : "";
+        ? `<a class="pr-link" href="${esc(safeHref(issue.pr_url))}" target="_blank" rel="noopener">Open PR ↗</a>` : "";
       const readyBtn = canMarkReady
-        ? `<button class="btn" data-ready="${esc(issue.repo)}|${issue.number}">Ready for review</button>` : "";
+        ? `<button class="btn btn-ready" data-ready="${esc(issue.repo)}|${issue.number}">Enable Ready for PR</button>` : "";
       return `
         <tr>
-          <td><a href="${esc(safeHref(issue.url))}" target="_blank" rel="noopener">${esc(issue.title)}</a></td>
-          <td>${esc(issue.repo)}#${esc(issue.number)} ${readyBtn}</td>
+          <td><a class="issue-link" href="${esc(safeHref(issue.url))}" target="_blank" rel="noopener">${esc(issue.title)}</a><span class="issue-number">#${esc(issue.number)}</span></td>
+          <td><span class="repo-name">${esc(issue.repo)}</span></td>
           <td class="labels">${labels}</td>
           <td>${statusBadge(issue.status)} ${prLink}</td>
           <td class="row-actions">
             ${canFix ? `<button class="btn btn-primary" data-fix="${esc(issue.repo)}|${issue.number}|${esc(issue.title)}|${esc(issue.url)}">Fix</button>` : ""}
+            ${readyBtn}
             ${canSkip ? `<button class="btn" data-skip="${esc(issue.repo)}|${issue.number}|${esc(issue.title)}|${esc(issue.url)}">Skip</button>` : ""}
             ${canUnskip ? `<button class="btn" data-unskip="${esc(issue.repo)}|${issue.number}">Unskip</button>` : ""}
           </td>
@@ -191,34 +200,46 @@
     const jobRows = state.jobs.map((job) => {
       const canMarkReady = Boolean(job.pr_url) && job.status !== "DONE";
       const readyBtn = canMarkReady
-        ? `<button class="btn" data-ready="${esc(job.repo)}|${job.number}">Ready for review</button>` : "";
+        ? `<button class="btn btn-ready" data-ready="${esc(job.repo)}|${job.number}">Enable Ready for PR</button>` : "";
       return `
       <tr>
-        <td><a href="${esc(safeHref(job.issue_url))}" target="_blank" rel="noopener">${esc(job.title)}</a></td>
-        <td>${esc(job.repo)}#${esc(job.number)} ${readyBtn}</td>
+        <td><a class="issue-link" href="${esc(safeHref(job.issue_url))}" target="_blank" rel="noopener">${esc(job.title)}</a><span class="issue-number">#${esc(job.number)}</span></td>
+        <td><span class="repo-name">${esc(job.repo)}</span></td>
         <td>${statusBadge(job.status)}</td>
-        <td>${job.pr_url ? `<a href="${esc(safeHref(job.pr_url))}" target="_blank" rel="noopener">PR</a>` : ""}</td>
+        <td>${job.pr_url ? `<a class="pr-link" href="${esc(safeHref(job.pr_url))}" target="_blank" rel="noopener">Open PR ↗</a>` : "—"}</td>
         <td>${esc((job.last_error || "").slice(0, 140))}</td>
+        <td class="row-actions">${readyBtn}</td>
       </tr>`;
     }).join("");
 
     panelEl.innerHTML = `
-      <div class="panel-header">
-        <h2>Assigned issues (${state.issues.length})</h2>
+      <div class="workspace-heading">
+        <div><span class="eyebrow">ACTIVE WORKSPACE</span><h2>@${esc(activeAccount ? activeAccount.github_username : "GitHub")}</h2><p>Assigned issues and solver progress update automatically.</p></div>
         <div class="actions">
           <button id="refresh-btn" class="btn">Refresh</button>
-          <button id="fix-all-btn" class="btn btn-primary">Fix all</button>
+          <button id="fix-all-btn" class="btn btn-primary">Fix all assigned</button>
         </div>
       </div>
-      <table>
-        <thead><tr><th>Issue</th><th>Repo</th><th>Labels</th><th>Status</th><th></th></tr></thead>
-        <tbody>${issueRows || `<tr><td colspan="5" class="empty">No open issues assigned to this account.</td></tr>`}</tbody>
-      </table>
-      <div class="section-title">Job history</div>
-      <table>
-        <thead><tr><th>Issue</th><th>Repo</th><th>Status</th><th>PR</th><th>Last note</th></tr></thead>
-        <tbody>${jobRows || `<tr><td colspan="5" class="empty">No jobs yet.</td></tr>`}</tbody>
-      </table>
+      <section class="stats-grid">
+        <div class="stat-card"><span>Assigned</span><strong>${state.issues.length}</strong><small>open GitHub issues</small></div>
+        <div class="stat-card stat-blue"><span>In progress</span><strong>${activeCount}</strong><small>queued, solving, or checking</small></div>
+        <div class="stat-card stat-green"><span>Solved</span><strong>${solvedCount}</strong><small>ready pull requests</small></div>
+        <div class="stat-card stat-amber"><span>Needs attention</span><strong>${attentionCount}</strong><small>${prCount} total PR${prCount === 1 ? "" : "s"} created</small></div>
+      </section>
+      <section class="data-section">
+        <div class="section-heading"><div><h3>Assigned issues</h3><p>Choose what the solver should work on.</p></div><span class="count-label">${state.issues.length} issues</span></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Issue</th><th>Repository</th><th>Labels</th><th>Status</th><th>Actions</th></tr></thead>
+          <tbody>${issueRows || `<tr><td colspan="5"><div class="empty-state compact"><strong>No assigned issues</strong><span>New assigned issues will appear here.</span></div></td></tr>`}</tbody>
+        </table></div>
+      </section>
+      <section class="data-section">
+        <div class="section-heading"><div><h3>Solver history</h3><p>One synchronized record per issue across Telegram and dashboard.</p></div><span class="count-label">${state.jobs.length} jobs</span></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Issue</th><th>Repository</th><th>Status</th><th>Pull request</th><th>Latest note</th><th>Action</th></tr></thead>
+          <tbody>${jobRows || `<tr><td colspan="6"><div class="empty-state compact"><strong>No solver jobs yet</strong><span>Click Fix on an issue to start.</span></div></td></tr>`}</tbody>
+        </table></div>
+      </section>
     `;
 
     document.getElementById("refresh-btn").addEventListener("click", refreshPanel);
@@ -289,7 +310,7 @@
 
   async function onMarkReady(raw, btn) {
     const [repo, number] = raw.split("|");
-    if (!confirm("Mark this PR ready for review now, without waiting for CI?")) return;
+    if (!confirm("Enable Ready for PR now? This changes the GitHub pull request from Draft to Ready for review without waiting for CI.")) return;
     btn.disabled = true;
     try {
       await api(`/api/accounts/${state.activeAccountId}/issues/mark-ready`, {
