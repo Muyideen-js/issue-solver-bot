@@ -60,7 +60,6 @@ class PortalUser(Base):
     must_change_password = Column(Boolean, nullable=False, default=True)
     deepseek_api_key_encrypted = Column(Text, nullable=False, default="")
     deepseek_model = Column(String, nullable=False, default="")
-    deepseek_key_reveal_until = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -111,7 +110,6 @@ async def _add_missing_columns() -> None:
         "portal_users": {
             "deepseek_api_key_encrypted": "TEXT NOT NULL DEFAULT ''",
             "deepseek_model": "VARCHAR NOT NULL DEFAULT ''",
-            "deepseek_key_reveal_until": "TIMESTAMP",
         },
     }
 

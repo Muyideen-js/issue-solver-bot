@@ -114,11 +114,6 @@ whether a key is connected, but never exposes its value. While using **View as**
 the admin can monitor and operate the person's GitHub jobs but cannot read or
 replace that person's AI key.
 
-For input mistakes, the person who owns the key has a one-hour recovery window
-after saving it. Revealing the key requires that person's current dashboard
-password. Once the window expires, the saved key continues working but cannot be
-displayed; the owner can replace it with a new key at any time.
-
 ## Environment
 
 Copy `.env.example` to `.env` locally. Never commit `.env`.

@@ -1,5 +1,4 @@
 import asyncio
-from datetime import datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -196,9 +195,7 @@ def test_each_portal_user_stores_a_private_encrypted_deepseek_key(monkeypatch):
         json={"api_key": raw_key, "model": "deepseek-chat"},
     )
     assert saved.status_code == 200, saved.text
-    assert saved.json()["connected"] is True
-    assert saved.json()["model"] == "deepseek-chat"
-    assert saved.json()["reveal_available"] is True
+    assert saved.json() == {"connected": True, "model": "deepseek-chat"}
 
     async def read_admin():
         async with AsyncSessionLocal() as db:
@@ -210,56 +207,8 @@ def test_each_portal_user_stores_a_private_encrypted_deepseek_key(monkeypatch):
 
     settings = client.get("/api/settings/deepseek")
     assert settings.status_code == 200
-    assert settings.json()["connected"] is True
-    assert settings.json()["model"] == "deepseek-chat"
-    assert settings.json()["reveal_available"] is True
+    assert settings.json() == {"connected": True, "model": "deepseek-chat"}
     assert raw_key not in settings.text
-
-
-def test_key_owner_can_recover_key_for_one_hour_with_password(monkeypatch):
-    _login_admin(monkeypatch)
-    raw_key = "sk-one-hour-recovery-key"
-    client.post(
-        "/api/settings/deepseek",
-        json={"api_key": raw_key, "model": "deepseek-chat"},
-    )
-
-    wrong_password = client.post(
-        "/api/settings/deepseek/reveal", json={"password": "not-the-password"}
-    )
-    assert wrong_password.status_code == 403
-
-    revealed = client.post(
-        "/api/settings/deepseek/reveal", json={"password": ADMIN_PASSWORD}
-    )
-    assert revealed.status_code == 200
-    assert revealed.json()["api_key"] == raw_key
-    assert revealed.json()["reveal_until"].endswith("Z")
-
-
-def test_key_recovery_expires_after_one_hour(monkeypatch):
-    admin = _login_admin(monkeypatch)
-    client.post(
-        "/api/settings/deepseek",
-        json={"api_key": "sk-expiring-private-key", "model": "deepseek-chat"},
-    )
-
-    async def expire_window():
-        async with AsyncSessionLocal() as db:
-            stored = await db.get(PortalUser, admin.id)
-            stored.deepseek_key_reveal_until = datetime.utcnow() - timedelta(seconds=1)
-            await db.commit()
-
-    asyncio.run(expire_window())
-
-    settings = client.get("/api/settings/deepseek").json()
-    assert settings["reveal_available"] is False
-    assert settings["reveal_until"] is None
-    reveal = client.post(
-        "/api/settings/deepseek/reveal", json={"password": ADMIN_PASSWORD}
-    )
-    assert reveal.status_code == 410
-    assert "expired" in reveal.json()["detail"].lower()
 
 
 def test_saving_a_key_resumes_only_that_users_jobs(monkeypatch):

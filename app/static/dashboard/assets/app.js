@@ -21,12 +21,6 @@
   const deepseekStatusEl = document.getElementById("deepseek-status");
   const deepseekErrorEl = document.getElementById("deepseek-error");
   const deepseekRemoveBtn = document.getElementById("deepseek-remove");
-  const deepseekRecoveryEl = document.getElementById("deepseek-recovery");
-  const deepseekRecoveryTimeEl = document.getElementById("deepseek-recovery-time");
-  const deepseekRevealPassword = document.getElementById("deepseek-reveal-password");
-  const deepseekRevealAuth = document.getElementById("deepseek-reveal-auth");
-  const deepseekSecretEl = document.getElementById("deepseek-secret");
-  const deepseekSecretValue = document.getElementById("deepseek-secret-value");
 
   function esc(value) {
     return String(value ?? "").replace(/[&<>"']/g, (c) => ({
@@ -370,11 +364,6 @@
   async function openAISettings() {
     deepseekErrorEl.classList.add("hidden");
     deepseekKeyInput.value = "";
-    deepseekRevealPassword.value = "";
-    deepseekSecretValue.textContent = "";
-    deepseekSecretEl.classList.add("hidden");
-    deepseekRevealAuth.classList.remove("hidden");
-    deepseekRecoveryEl.classList.add("hidden");
     aiSettingsModal.classList.remove("hidden");
     deepseekStatusEl.textContent = "Checking connection...";
     try {
@@ -385,48 +374,10 @@
         : "Not connected — add a key before starting solver jobs.";
       deepseekStatusEl.className = `connection-status ${settings.connected ? "connected" : "missing"}`;
       deepseekRemoveBtn.classList.toggle("hidden", !settings.connected);
-      showRecoveryWindow(settings);
     } catch (err) {
       deepseekErrorEl.textContent = err.message;
       deepseekErrorEl.classList.remove("hidden");
     }
-  }
-
-  function showRecoveryWindow(settings) {
-    const available = Boolean(settings.reveal_available && settings.reveal_until);
-    deepseekRecoveryEl.classList.toggle("hidden", !available);
-    if (!available) return;
-    const expiry = new Date(settings.reveal_until);
-    deepseekRecoveryTimeEl.textContent = `Available until ${expiry.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
-  }
-
-  async function revealAIKey() {
-    deepseekErrorEl.classList.add("hidden");
-    if (!deepseekRevealPassword.value) {
-      deepseekErrorEl.textContent = "Enter your dashboard password to reveal the key.";
-      deepseekErrorEl.classList.remove("hidden");
-      return;
-    }
-    try {
-      const result = await api("/api/settings/deepseek/reveal", {
-        method: "POST",
-        body: JSON.stringify({ password: deepseekRevealPassword.value }),
-      });
-      deepseekSecretValue.textContent = result.api_key;
-      deepseekSecretEl.classList.remove("hidden");
-      deepseekRevealAuth.classList.add("hidden");
-      deepseekRevealPassword.value = "";
-    } catch (err) {
-      deepseekErrorEl.textContent = err.message;
-      deepseekErrorEl.classList.remove("hidden");
-    }
-  }
-
-  async function copyRevealedKey() {
-    await navigator.clipboard.writeText(deepseekSecretValue.textContent);
-    const button = document.getElementById("deepseek-copy-btn");
-    button.textContent = "Copied";
-    setTimeout(() => { button.textContent = "Copy"; }, 1500);
   }
 
   function closeAISettings() {
@@ -450,7 +401,6 @@
       deepseekStatusEl.className = `connection-status ${result.connected ? "connected" : "missing"}`;
       deepseekKeyInput.value = "";
       deepseekRemoveBtn.classList.toggle("hidden", !result.connected);
-      showRecoveryWindow(result);
       delete state.cache[state.activeAccountId];
       await refreshPanel();
     } catch (err) {
@@ -469,7 +419,6 @@
       deepseekStatusEl.textContent = "Not connected — add a key before starting solver jobs.";
       deepseekStatusEl.className = "connection-status missing";
       deepseekRemoveBtn.classList.add("hidden");
-      deepseekRecoveryEl.classList.add("hidden");
     } catch (err) {
       deepseekErrorEl.textContent = err.message;
       deepseekErrorEl.classList.remove("hidden");
@@ -503,8 +452,6 @@
   document.getElementById("deepseek-cancel").addEventListener("click", closeAISettings);
   document.getElementById("deepseek-save").addEventListener("click", saveAISettings);
   deepseekRemoveBtn.addEventListener("click", removeAIKey);
-  document.getElementById("deepseek-reveal-btn").addEventListener("click", revealAIKey);
-  document.getElementById("deepseek-copy-btn").addEventListener("click", copyRevealedKey);
 
   document.getElementById("logout-btn").addEventListener("click", async () => {
     await api("/api/logout", { method: "POST" }).catch(() => {});

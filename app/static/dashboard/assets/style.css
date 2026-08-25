@@ -250,13 +250,6 @@ a:hover { color: var(--blue); text-decoration: underline; }
 .connection-status { margin: 1rem 0 0.35rem; padding: 0.65rem 0.75rem; border-left: 3px solid var(--border-strong); background: var(--surface-soft); color: var(--muted); font-size: 0.74rem; font-weight: 650; }
 .connection-status.connected { border-left-color: var(--ok); background: var(--ok-soft); color: var(--ok); }
 .connection-status.missing { border-left-color: var(--warn); background: var(--warn-soft); color: var(--warn); }
-.key-recovery { margin: 1rem 0; padding: 0.9rem; border: 1px solid #b9ceed; background: var(--blue-soft); }
-.key-recovery-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; color: var(--blue-dark); font-size: 0.75rem; }
-.key-recovery-heading span { color: var(--muted); font-size: 0.65rem; }
-.reveal-auth, .secret-preview { display: flex; align-items: stretch; gap: 0.45rem; margin-top: 0.75rem; }
-.reveal-auth input { min-width: 0; margin-top: 0; }
-.secret-preview { padding: 0.55rem; border: 1px solid #9bbbe6; background: #fff; }
-.secret-preview code { min-width: 0; flex: 1; align-self: center; overflow-wrap: anywhere; color: var(--text); font-size: 0.72rem; }
 .hint { margin: 0.2rem 0 0; color: var(--muted); font-size: 0.76rem; line-height: 1.5; }
 .error { color: var(--danger); font-size: 0.76rem; }
 .form-row { margin-bottom: 0.8rem; }

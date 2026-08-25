@@ -70,10 +70,6 @@ class DeepSeekSettingsRequest(BaseModel):
     clear: bool = False
 
 
-class DeepSeekRevealRequest(BaseModel):
-    password: str
-
-
 class IssueRef(BaseModel):
     repo: str
     number: int
@@ -354,18 +350,9 @@ async def change_password(
 
 @router.get("/api/settings/deepseek")
 async def get_deepseek_settings(user: PortalUser = Depends(require_login)):
-    reveal_available = bool(
-        user.deepseek_api_key_encrypted
-        and user.deepseek_key_reveal_until
-        and user.deepseek_key_reveal_until > datetime.utcnow()
-    )
     return {
         "connected": bool(user.deepseek_api_key_encrypted),
         "model": user.deepseek_model or "deepseek-v4-flash",
-        "reveal_available": reveal_available,
-        "reveal_until": (
-            f"{user.deepseek_key_reveal_until.isoformat()}Z" if reveal_available else None
-        ),
     }
 
 
@@ -384,10 +371,8 @@ async def save_deepseek_settings(
         fresh = await db.get(PortalUser, user.id)
         if payload.clear:
             fresh.deepseek_api_key_encrypted = ""
-            fresh.deepseek_key_reveal_until = None
         elif api_key:
             fresh.deepseek_api_key_encrypted = encrypt_token(api_key)
-            fresh.deepseek_key_reveal_until = datetime.utcnow() + timedelta(hours=1)
         fresh.deepseek_model = model
 
         # Jobs stopped only because this user had no key can continue as soon
@@ -412,44 +397,7 @@ async def save_deepseek_settings(
                     job.next_attempt_at = datetime.utcnow()
                     job.last_error = "User DeepSeek key saved; solver resumed"
         await db.commit()
-    reveal_available = bool(
-        fresh.deepseek_api_key_encrypted
-        and fresh.deepseek_key_reveal_until
-        and fresh.deepseek_key_reveal_until > datetime.utcnow()
-    )
-    return {
-        "connected": bool(fresh.deepseek_api_key_encrypted),
-        "model": model,
-        "reveal_available": reveal_available,
-        "reveal_until": (
-            f"{fresh.deepseek_key_reveal_until.isoformat()}Z" if reveal_available else None
-        ),
-    }
-
-
-@router.post("/api/settings/deepseek/reveal")
-async def reveal_deepseek_key(
-    payload: DeepSeekRevealRequest, user: PortalUser = Depends(require_login)
-):
-    """Allow only the signed-in key owner to recover a newly saved key for one hour."""
-    async with AsyncSessionLocal() as db:
-        fresh = await db.get(PortalUser, user.id)
-        if not verify_password(payload.password, fresh.password_hash):
-            raise HTTPException(status_code=403, detail="Password is incorrect")
-        if not fresh.deepseek_api_key_encrypted:
-            raise HTTPException(status_code=404, detail="No DeepSeek key is connected")
-        if (
-            not fresh.deepseek_key_reveal_until
-            or fresh.deepseek_key_reveal_until <= datetime.utcnow()
-        ):
-            raise HTTPException(
-                status_code=410,
-                detail="The one-hour recovery window has expired. Save a replacement key if needed.",
-            )
-        return {
-            "api_key": decrypt_token(fresh.deepseek_api_key_encrypted),
-            "reveal_until": f"{fresh.deepseek_key_reveal_until.isoformat()}Z",
-        }
+    return {"connected": bool(fresh.deepseek_api_key_encrypted), "model": model}
 
 
 @router.get("/api/me")
