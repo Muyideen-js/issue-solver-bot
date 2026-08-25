@@ -58,6 +58,9 @@ class PortalUser(Base):
     password_hash = Column(String, nullable=False)
     is_admin = Column(Boolean, nullable=False, default=False)
     must_change_password = Column(Boolean, nullable=False, default=True)
+    deepseek_api_key_encrypted = Column(Text, nullable=False, default="")
+    deepseek_model = Column(String, nullable=False, default="")
+    deepseek_key_reveal_until = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -105,6 +108,11 @@ async def _add_missing_columns() -> None:
     """
     additions = {
         "solver_users": {"owner_portal_user_id": "INTEGER"},
+        "portal_users": {
+            "deepseek_api_key_encrypted": "TEXT NOT NULL DEFAULT ''",
+            "deepseek_model": "VARCHAR NOT NULL DEFAULT ''",
+            "deepseek_key_reveal_until": "TIMESTAMP",
+        },
     }
 
     def _migrate(sync_connection) -> None:

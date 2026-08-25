@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,7 +15,7 @@ from app.models.database import (
     bootstrap_admin,
 )
 from app.services import github as gh
-from app.services.crypto import encrypt_token
+from app.services.crypto import decrypt_token, encrypt_token
 from app.services.password import hash_password
 
 client = TestClient(app)
@@ -184,6 +185,142 @@ def test_two_portal_users_accounts_are_isolated(monkeypatch):
 
     cross_access_reverse = other_client.get(f"/api/accounts/{admin_account.id}/issues")
     assert cross_access_reverse.status_code == 404
+
+
+def test_each_portal_user_stores_a_private_encrypted_deepseek_key(monkeypatch):
+    admin = _login_admin(monkeypatch)
+    raw_key = "sk-this-belongs-only-to-the-admin"
+
+    saved = client.post(
+        "/api/settings/deepseek",
+        json={"api_key": raw_key, "model": "deepseek-chat"},
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["connected"] is True
+    assert saved.json()["model"] == "deepseek-chat"
+    assert saved.json()["reveal_available"] is True
+
+    async def read_admin():
+        async with AsyncSessionLocal() as db:
+            return await db.get(PortalUser, admin.id)
+
+    stored = asyncio.run(read_admin())
+    assert stored.deepseek_api_key_encrypted != raw_key
+    assert decrypt_token(stored.deepseek_api_key_encrypted) == raw_key
+
+    settings = client.get("/api/settings/deepseek")
+    assert settings.status_code == 200
+    assert settings.json()["connected"] is True
+    assert settings.json()["model"] == "deepseek-chat"
+    assert settings.json()["reveal_available"] is True
+    assert raw_key not in settings.text
+
+
+def test_key_owner_can_recover_key_for_one_hour_with_password(monkeypatch):
+    _login_admin(monkeypatch)
+    raw_key = "sk-one-hour-recovery-key"
+    client.post(
+        "/api/settings/deepseek",
+        json={"api_key": raw_key, "model": "deepseek-chat"},
+    )
+
+    wrong_password = client.post(
+        "/api/settings/deepseek/reveal", json={"password": "not-the-password"}
+    )
+    assert wrong_password.status_code == 403
+
+    revealed = client.post(
+        "/api/settings/deepseek/reveal", json={"password": ADMIN_PASSWORD}
+    )
+    assert revealed.status_code == 200
+    assert revealed.json()["api_key"] == raw_key
+    assert revealed.json()["reveal_until"].endswith("Z")
+
+
+def test_key_recovery_expires_after_one_hour(monkeypatch):
+    admin = _login_admin(monkeypatch)
+    client.post(
+        "/api/settings/deepseek",
+        json={"api_key": "sk-expiring-private-key", "model": "deepseek-chat"},
+    )
+
+    async def expire_window():
+        async with AsyncSessionLocal() as db:
+            stored = await db.get(PortalUser, admin.id)
+            stored.deepseek_key_reveal_until = datetime.utcnow() - timedelta(seconds=1)
+            await db.commit()
+
+    asyncio.run(expire_window())
+
+    settings = client.get("/api/settings/deepseek").json()
+    assert settings["reveal_available"] is False
+    assert settings["reveal_until"] is None
+    reveal = client.post(
+        "/api/settings/deepseek/reveal", json={"password": ADMIN_PASSWORD}
+    )
+    assert reveal.status_code == 410
+    assert "expired" in reveal.json()["detail"].lower()
+
+
+def test_saving_a_key_resumes_only_that_users_jobs(monkeypatch):
+    admin = _login_admin(monkeypatch)
+    created = client.post(
+        "/api/admin/users",
+        json={"username": "separatekey", "temporary_password": "temp-password-1"},
+    ).json()
+    admin_account = asyncio.run(_add_dashboard_account(admin.id, "admin-gh"))
+    other_account = asyncio.run(_add_dashboard_account(created["id"], "other-gh"))
+    admin_job = asyncio.run(
+        _add_job(admin_account.telegram_id, "o/admin", 1, status="NEEDS_API_KEY")
+    )
+    other_job = asyncio.run(
+        _add_job(other_account.telegram_id, "o/other", 2, status="NEEDS_API_KEY")
+    )
+
+    saved = client.post(
+        "/api/settings/deepseek",
+        json={"api_key": "sk-admin-private-key", "model": "deepseek-chat"},
+    )
+    assert saved.status_code == 200, saved.text
+
+    async def read_jobs():
+        async with AsyncSessionLocal() as db:
+            return await db.get(IssueJob, admin_job.id), await db.get(IssueJob, other_job.id)
+
+    resumed, untouched = asyncio.run(read_jobs())
+    assert resumed.status == "QUEUED"
+    assert untouched.status == "NEEDS_API_KEY"
+
+
+def test_admin_view_as_cannot_replace_the_target_users_ai_key(monkeypatch):
+    admin = _login_admin(monkeypatch)
+    created = client.post(
+        "/api/admin/users",
+        json={"username": "privateowner", "temporary_password": "temp-password-1"},
+    ).json()
+
+    user_client = TestClient(app)
+    _login(user_client, "privateowner", "temp-password-1")
+    user_client.post(
+        "/api/settings/deepseek",
+        json={"api_key": "sk-target-private-key", "model": "deepseek-chat"},
+    )
+
+    assert client.post(f"/api/admin/users/{created['id']}/view-as").status_code == 200
+    assert client.post(
+        "/api/settings/deepseek",
+        json={"api_key": "sk-admin-own-key", "model": "deepseek-reasoner"},
+    ).status_code == 200
+
+    async def read_users():
+        async with AsyncSessionLocal() as db:
+            target = await db.get(PortalUser, created["id"])
+            admin_row = await db.get(PortalUser, admin.id)
+            return target, admin_row
+
+    target, admin_row = asyncio.run(read_users())
+    assert decrypt_token(target.deepseek_api_key_encrypted) == "sk-target-private-key"
+    assert decrypt_token(admin_row.deepseek_api_key_encrypted) == "sk-admin-own-key"
 
 
 # --- Admin impersonation -------------------------------------------------

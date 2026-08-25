@@ -22,22 +22,32 @@
   </div>
   <div class="topbar-actions">
     <a id="admin-link" href="/dashboard/admin" class="btn hidden">Admin</a>
+    <button id="ai-settings-btn" class="btn">AI settings</button>
     <button id="add-account-btn" class="btn btn-primary">Add GitHub account</button>
     <button id="logout-btn" class="btn">Log out</button>
   </div>
 </header>
 
-<section class="account-bar">
-  <span class="account-bar-label">Connected accounts</span>
-  <nav id="tabs" class="tabs"></nav>
-</section>
+<div class="dashboard-shell">
+  <aside class="account-sidebar">
+    <div class="account-sidebar-heading">
+      <div>
+        <span class="eyebrow">GITHUB</span>
+        <h2>Workspaces</h2>
+      </div>
+      <span id="account-count" class="count-label">0</span>
+    </div>
+    <nav id="tabs" class="account-list"></nav>
+    <div class="account-sidebar-note">Switch accounts without mixing issues, jobs, or credentials.</div>
+  </aside>
 
-<main id="panel" class="panel">
-  <div class="empty-state">
-    <strong>No GitHub account selected</strong>
-    <span>Add an account to see assigned issues and solver activity.</span>
-  </div>
-</main>
+  <main id="panel" class="panel">
+    <div class="empty-state">
+      <strong>No GitHub account selected</strong>
+      <span>Add an account to see assigned issues and solver activity.</span>
+    </div>
+  </main>
+</div>
 
 <div id="add-account-modal" class="modal hidden">
   <div class="modal-card">
@@ -49,6 +59,44 @@
     <div class="modal-actions">
       <button id="add-account-cancel" class="btn">Cancel</button>
       <button id="add-account-submit" class="btn btn-primary">Add</button>
+    </div>
+  </div>
+</div>
+
+<div id="ai-settings-modal" class="modal hidden">
+  <div class="modal-card">
+    <h2>Your DeepSeek connection</h2>
+    <p class="hint">Your key is encrypted and used only for your own solver jobs. Administrators can see whether a key is connected, but cannot read it.</p>
+    <div id="deepseek-status" class="connection-status">Checking connection...</div>
+    <div class="form-row">
+      <label>DeepSeek API key</label>
+      <input id="deepseek-api-key" type="password" placeholder="Leave blank to keep the saved key" autocomplete="off">
+    </div>
+    <div class="form-row">
+      <label>Model</label>
+      <input id="deepseek-model" type="text" value="deepseek-v4-flash" maxlength="80" autocomplete="off">
+    </div>
+    <section id="deepseek-recovery" class="key-recovery hidden">
+      <div class="key-recovery-heading">
+        <strong>One-hour key recovery</strong>
+        <span id="deepseek-recovery-time"></span>
+      </div>
+      <p class="hint">Confirm your password to reveal and copy the saved key. This option disappears one hour after the key was saved.</p>
+      <div id="deepseek-reveal-auth" class="reveal-auth">
+        <input id="deepseek-reveal-password" type="password" placeholder="Your dashboard password" autocomplete="current-password">
+        <button id="deepseek-reveal-btn" class="btn" type="button">Reveal key</button>
+      </div>
+      <div id="deepseek-secret" class="secret-preview hidden">
+        <code id="deepseek-secret-value"></code>
+        <button id="deepseek-copy-btn" class="btn" type="button">Copy</button>
+      </div>
+    </section>
+    <p id="deepseek-error" class="error hidden"></p>
+    <div class="modal-actions split-actions">
+      <button id="deepseek-remove" class="btn btn-danger hidden">Remove key</button>
+      <span class="action-spacer"></span>
+      <button id="deepseek-cancel" class="btn">Cancel</button>
+      <button id="deepseek-save" class="btn btn-primary">Save connection</button>
     </div>
   </div>
 </div>

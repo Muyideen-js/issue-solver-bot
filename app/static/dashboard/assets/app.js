@@ -15,6 +15,18 @@
   const modalEl = document.getElementById("add-account-modal");
   const tokenInput = document.getElementById("add-account-token");
   const addErrorEl = document.getElementById("add-account-error");
+  const aiSettingsModal = document.getElementById("ai-settings-modal");
+  const deepseekKeyInput = document.getElementById("deepseek-api-key");
+  const deepseekModelInput = document.getElementById("deepseek-model");
+  const deepseekStatusEl = document.getElementById("deepseek-status");
+  const deepseekErrorEl = document.getElementById("deepseek-error");
+  const deepseekRemoveBtn = document.getElementById("deepseek-remove");
+  const deepseekRecoveryEl = document.getElementById("deepseek-recovery");
+  const deepseekRecoveryTimeEl = document.getElementById("deepseek-recovery-time");
+  const deepseekRevealPassword = document.getElementById("deepseek-reveal-password");
+  const deepseekRevealAuth = document.getElementById("deepseek-reveal-auth");
+  const deepseekSecretEl = document.getElementById("deepseek-secret");
+  const deepseekSecretValue = document.getElementById("deepseek-secret-value");
 
   function esc(value) {
     return String(value ?? "").replace(/[&<>"']/g, (c) => ({
@@ -58,6 +70,7 @@
       SKIPPED: ["badge-danger", "Skipped"],
       SKIPPED_BY_USER: ["", "Skipped"],
       NEEDS_REVIEW: ["badge-warn", "Needs attention"],
+      NEEDS_API_KEY: ["badge-danger", "AI key required"],
       NEEDS_TESTS: ["badge-warn", "No CI checks"],
     };
     const [cls, label] = map[status] || ["", status];
@@ -77,15 +90,21 @@
   }
 
   function renderTabs() {
+    document.getElementById("account-count").textContent = state.accounts.length;
     tabsEl.innerHTML = state.accounts.map((account) => `
-      <div class="tab ${account.id === state.activeAccountId ? "active" : ""}"
+      <div class="account-item ${account.id === state.activeAccountId ? "active" : ""}"
            data-id="${account.id}">
-        @${esc(account.github_username)}
-        <span class="tab-close" data-remove="${account.id}" title="Remove account"> &times;</span>
+        <span class="account-avatar">${esc(account.github_username.slice(0, 2).toUpperCase())}</span>
+        <span class="account-copy"><strong>@${esc(account.github_username)}</strong><small>GitHub connected</small></span>
+        <button class="account-remove" data-remove="${account.id}" title="Remove account" aria-label="Remove @${esc(account.github_username)}">&times;</button>
       </div>
     `).join("");
 
-    tabsEl.querySelectorAll(".tab").forEach((el) => {
+    if (!state.accounts.length) {
+      tabsEl.innerHTML = `<div class="account-list-empty">No accounts connected yet.</div>`;
+    }
+
+    tabsEl.querySelectorAll(".account-item").forEach((el) => {
       el.addEventListener("click", (event) => {
         if (event.target.dataset.remove) return;
         activateAccount(Number(el.dataset.id));
@@ -164,7 +183,7 @@
   function renderPanel() {
     const activeAccount = state.accounts.find((account) => account.id === state.activeAccountId);
     const activeStatuses = new Set(["QUEUED", "PROCESSING", "WAITING_CI"]);
-    const attentionStatuses = new Set(["FAILED", "NEEDS_REVIEW", "NEEDS_TESTS"]);
+    const attentionStatuses = new Set(["FAILED", "NEEDS_REVIEW", "NEEDS_API_KEY", "NEEDS_TESTS"]);
     const solvedCount = state.jobs.filter((job) => job.status === "DONE").length;
     const activeCount = state.jobs.filter((job) => activeStatuses.has(job.status)).length;
     const attentionCount = state.jobs.filter((job) => attentionStatuses.has(job.status)).length;
@@ -348,6 +367,115 @@
     modalEl.classList.add("hidden");
   }
 
+  async function openAISettings() {
+    deepseekErrorEl.classList.add("hidden");
+    deepseekKeyInput.value = "";
+    deepseekRevealPassword.value = "";
+    deepseekSecretValue.textContent = "";
+    deepseekSecretEl.classList.add("hidden");
+    deepseekRevealAuth.classList.remove("hidden");
+    deepseekRecoveryEl.classList.add("hidden");
+    aiSettingsModal.classList.remove("hidden");
+    deepseekStatusEl.textContent = "Checking connection...";
+    try {
+      const settings = await api("/api/settings/deepseek");
+      deepseekModelInput.value = settings.model || "deepseek-v4-flash";
+      deepseekStatusEl.textContent = settings.connected
+        ? "Connected — your solver jobs use your private key."
+        : "Not connected — add a key before starting solver jobs.";
+      deepseekStatusEl.className = `connection-status ${settings.connected ? "connected" : "missing"}`;
+      deepseekRemoveBtn.classList.toggle("hidden", !settings.connected);
+      showRecoveryWindow(settings);
+    } catch (err) {
+      deepseekErrorEl.textContent = err.message;
+      deepseekErrorEl.classList.remove("hidden");
+    }
+  }
+
+  function showRecoveryWindow(settings) {
+    const available = Boolean(settings.reveal_available && settings.reveal_until);
+    deepseekRecoveryEl.classList.toggle("hidden", !available);
+    if (!available) return;
+    const expiry = new Date(settings.reveal_until);
+    deepseekRecoveryTimeEl.textContent = `Available until ${expiry.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  }
+
+  async function revealAIKey() {
+    deepseekErrorEl.classList.add("hidden");
+    if (!deepseekRevealPassword.value) {
+      deepseekErrorEl.textContent = "Enter your dashboard password to reveal the key.";
+      deepseekErrorEl.classList.remove("hidden");
+      return;
+    }
+    try {
+      const result = await api("/api/settings/deepseek/reveal", {
+        method: "POST",
+        body: JSON.stringify({ password: deepseekRevealPassword.value }),
+      });
+      deepseekSecretValue.textContent = result.api_key;
+      deepseekSecretEl.classList.remove("hidden");
+      deepseekRevealAuth.classList.add("hidden");
+      deepseekRevealPassword.value = "";
+    } catch (err) {
+      deepseekErrorEl.textContent = err.message;
+      deepseekErrorEl.classList.remove("hidden");
+    }
+  }
+
+  async function copyRevealedKey() {
+    await navigator.clipboard.writeText(deepseekSecretValue.textContent);
+    const button = document.getElementById("deepseek-copy-btn");
+    button.textContent = "Copied";
+    setTimeout(() => { button.textContent = "Copy"; }, 1500);
+  }
+
+  function closeAISettings() {
+    aiSettingsModal.classList.add("hidden");
+  }
+
+  async function saveAISettings() {
+    deepseekErrorEl.classList.add("hidden");
+    try {
+      const result = await api("/api/settings/deepseek", {
+        method: "POST",
+        body: JSON.stringify({
+          api_key: deepseekKeyInput.value.trim() || null,
+          model: deepseekModelInput.value.trim(),
+          clear: false,
+        }),
+      });
+      deepseekStatusEl.textContent = result.connected
+        ? "Connected — your solver jobs use your private key."
+        : "Not connected — add a key before starting solver jobs.";
+      deepseekStatusEl.className = `connection-status ${result.connected ? "connected" : "missing"}`;
+      deepseekKeyInput.value = "";
+      deepseekRemoveBtn.classList.toggle("hidden", !result.connected);
+      showRecoveryWindow(result);
+      delete state.cache[state.activeAccountId];
+      await refreshPanel();
+    } catch (err) {
+      deepseekErrorEl.textContent = err.message;
+      deepseekErrorEl.classList.remove("hidden");
+    }
+  }
+
+  async function removeAIKey() {
+    if (!confirm("Remove your DeepSeek key? New solver work will stop until you add another key.")) return;
+    try {
+      await api("/api/settings/deepseek", {
+        method: "POST",
+        body: JSON.stringify({ model: deepseekModelInput.value.trim(), clear: true }),
+      });
+      deepseekStatusEl.textContent = "Not connected — add a key before starting solver jobs.";
+      deepseekStatusEl.className = "connection-status missing";
+      deepseekRemoveBtn.classList.add("hidden");
+      deepseekRecoveryEl.classList.add("hidden");
+    } catch (err) {
+      deepseekErrorEl.textContent = err.message;
+      deepseekErrorEl.classList.remove("hidden");
+    }
+  }
+
   async function submitAddAccount() {
     const token = tokenInput.value.trim();
     if (!token) return;
@@ -371,6 +499,12 @@
   tokenInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") submitAddAccount();
   });
+  document.getElementById("ai-settings-btn").addEventListener("click", openAISettings);
+  document.getElementById("deepseek-cancel").addEventListener("click", closeAISettings);
+  document.getElementById("deepseek-save").addEventListener("click", saveAISettings);
+  deepseekRemoveBtn.addEventListener("click", removeAIKey);
+  document.getElementById("deepseek-reveal-btn").addEventListener("click", revealAIKey);
+  document.getElementById("deepseek-copy-btn").addEventListener("click", copyRevealedKey);
 
   document.getElementById("logout-btn").addEventListener("click", async () => {
     await api("/api/logout", { method: "POST" }).catch(() => {});
@@ -417,6 +551,7 @@
       document.getElementById("impersonation-text").textContent =
         `Viewing @${me.impersonating.username}'s dashboard`;
       document.getElementById("impersonation-banner").classList.remove("hidden");
+      document.getElementById("ai-settings-btn").classList.add("hidden");
     }
     if (me.must_change_password) {
       changePasswordModal.classList.remove("hidden");

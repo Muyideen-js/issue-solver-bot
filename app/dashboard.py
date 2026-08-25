@@ -34,6 +34,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static" / "dashboard"
 ACTIVE_STATUSES = {"QUEUED", "PROCESSING", "WAITING_CI"}
 REPO_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{3,40}$")
+AI_MODEL_PATTERN = re.compile(r"^[A-Za-z0-9._:/-]{1,80}$")
 
 LOGIN_ATTEMPTS: dict[str, deque] = defaultdict(deque)
 MAX_LOGIN_ATTEMPTS = 8
@@ -61,6 +62,16 @@ class ResetPasswordRequest(BaseModel):
 
 class AddAccountRequest(BaseModel):
     token: str
+
+
+class DeepSeekSettingsRequest(BaseModel):
+    api_key: str | None = None
+    model: str = ""
+    clear: bool = False
+
+
+class DeepSeekRevealRequest(BaseModel):
+    password: str
 
 
 class IssueRef(BaseModel):
@@ -171,6 +182,7 @@ def _user_summary(user: PortalUser) -> dict:
         "id": user.id,
         "username": user.username,
         "must_change_password": user.must_change_password,
+        "deepseek_connected": bool(user.deepseek_api_key_encrypted),
         "created_at": user.created_at.isoformat() if user.created_at else None,
     }
 
@@ -183,6 +195,7 @@ JOB_STATUS_PRIORITY = {
     "WAITING_CI": 80,
     "QUEUED": 70,
     "NEEDS_REVIEW": 60,
+    "NEEDS_API_KEY": 55,
     "NEEDS_TESTS": 50,
     "FAILED": 40,
     "SKIPPED_BY_USER": 20,
@@ -339,6 +352,106 @@ async def change_password(
     return {"changed": True}
 
 
+@router.get("/api/settings/deepseek")
+async def get_deepseek_settings(user: PortalUser = Depends(require_login)):
+    reveal_available = bool(
+        user.deepseek_api_key_encrypted
+        and user.deepseek_key_reveal_until
+        and user.deepseek_key_reveal_until > datetime.utcnow()
+    )
+    return {
+        "connected": bool(user.deepseek_api_key_encrypted),
+        "model": user.deepseek_model or "deepseek-v4-flash",
+        "reveal_available": reveal_available,
+        "reveal_until": (
+            f"{user.deepseek_key_reveal_until.isoformat()}Z" if reveal_available else None
+        ),
+    }
+
+
+@router.post("/api/settings/deepseek")
+async def save_deepseek_settings(
+    payload: DeepSeekSettingsRequest, user: PortalUser = Depends(require_login)
+):
+    model = payload.model.strip() or "deepseek-v4-flash"
+    if not AI_MODEL_PATTERN.fullmatch(model):
+        raise HTTPException(status_code=400, detail="Invalid DeepSeek model name")
+    api_key = (payload.api_key or "").strip()
+    if api_key and (len(api_key) < 10 or len(api_key) > 512):
+        raise HTTPException(status_code=400, detail="Invalid DeepSeek API key")
+
+    async with AsyncSessionLocal() as db:
+        fresh = await db.get(PortalUser, user.id)
+        if payload.clear:
+            fresh.deepseek_api_key_encrypted = ""
+            fresh.deepseek_key_reveal_until = None
+        elif api_key:
+            fresh.deepseek_api_key_encrypted = encrypt_token(api_key)
+            fresh.deepseek_key_reveal_until = datetime.utcnow() + timedelta(hours=1)
+        fresh.deepseek_model = model
+
+        # Jobs stopped only because this user had no key can continue as soon
+        # as their own key is saved. Other users' jobs are never touched.
+        if fresh.deepseek_api_key_encrypted:
+            account_ids = await db.execute(
+                select(SolverUser.telegram_id).where(
+                    SolverUser.owner_portal_user_id == fresh.id
+                )
+            )
+            telegram_ids = [row[0] for row in account_ids.all()]
+            if telegram_ids:
+                jobs = await db.execute(
+                    select(IssueJob).where(
+                        IssueJob.telegram_id.in_(telegram_ids),
+                        IssueJob.status == "NEEDS_API_KEY",
+                    )
+                )
+                for job in jobs.scalars():
+                    job.status = "WAITING_CI" if job.draft_pr_number else "QUEUED"
+                    job.attempts = 0
+                    job.next_attempt_at = datetime.utcnow()
+                    job.last_error = "User DeepSeek key saved; solver resumed"
+        await db.commit()
+    reveal_available = bool(
+        fresh.deepseek_api_key_encrypted
+        and fresh.deepseek_key_reveal_until
+        and fresh.deepseek_key_reveal_until > datetime.utcnow()
+    )
+    return {
+        "connected": bool(fresh.deepseek_api_key_encrypted),
+        "model": model,
+        "reveal_available": reveal_available,
+        "reveal_until": (
+            f"{fresh.deepseek_key_reveal_until.isoformat()}Z" if reveal_available else None
+        ),
+    }
+
+
+@router.post("/api/settings/deepseek/reveal")
+async def reveal_deepseek_key(
+    payload: DeepSeekRevealRequest, user: PortalUser = Depends(require_login)
+):
+    """Allow only the signed-in key owner to recover a newly saved key for one hour."""
+    async with AsyncSessionLocal() as db:
+        fresh = await db.get(PortalUser, user.id)
+        if not verify_password(payload.password, fresh.password_hash):
+            raise HTTPException(status_code=403, detail="Password is incorrect")
+        if not fresh.deepseek_api_key_encrypted:
+            raise HTTPException(status_code=404, detail="No DeepSeek key is connected")
+        if (
+            not fresh.deepseek_key_reveal_until
+            or fresh.deepseek_key_reveal_until <= datetime.utcnow()
+        ):
+            raise HTTPException(
+                status_code=410,
+                detail="The one-hour recovery window has expired. Save a replacement key if needed.",
+            )
+        return {
+            "api_key": decrypt_token(fresh.deepseek_api_key_encrypted),
+            "reveal_until": f"{fresh.deepseek_key_reveal_until.isoformat()}Z",
+        }
+
+
 @router.get("/api/me")
 async def me(request: Request, user: PortalUser = Depends(require_login)):
     impersonating = None
@@ -354,6 +467,8 @@ async def me(request: Request, user: PortalUser = Depends(require_login)):
         "username": user.username,
         "is_admin": user.is_admin,
         "must_change_password": user.must_change_password,
+        "deepseek_connected": bool(user.deepseek_api_key_encrypted),
+        "deepseek_model": user.deepseek_model or "deepseek-v4-flash",
         "impersonating": impersonating,
     }
 

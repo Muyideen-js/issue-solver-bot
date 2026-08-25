@@ -172,6 +172,8 @@ async def solve_issue(
     focus_files: list[str] | None = None,
     ci_failure_details: str = "",
     repeated_ci_failure: bool = False,
+    api_key: str | None = None,
+    model: str | None = None,
 ) -> dict:
     """Run a bounded read/search/write agent loop and return its PR summary."""
     repair_mode = mode == "repair"
@@ -260,7 +262,12 @@ cast is proven safe by the compiler's inferred type.
         available_tools = REPAIR_TOOLS if repair_mode else TOOLS
         if repair_mode and turn_index >= exploration_deadline and not edit_seen:
             available_tools = REPAIR_EDIT_TOOLS
-        message = await _request_agent(messages, tools=available_tools)
+        message = await _request_agent(
+            messages,
+            tools=available_tools,
+            api_key=api_key,
+            model=model,
+        )
         assistant_message = _assistant_history_message(message)
         messages.append(assistant_message)
         tool_calls = assistant_message.get("tool_calls", [])
@@ -399,13 +406,17 @@ cast is proven safe by the compiler's inferred type.
 
 
 async def _request_agent(
-    messages: list[dict], retries: int = 2, tools: list[dict] | None = None
+    messages: list[dict],
+    retries: int = 2,
+    tools: list[dict] | None = None,
+    api_key: str | None = None,
+    model: str | None = None,
 ) -> dict:
-    api_key = os.getenv("DEEPSEEK_API_KEY")
+    api_key = (api_key or os.getenv("DEEPSEEK_API_KEY") or "").strip()
     if not api_key:
         raise CodingAgentError("DEEPSEEK_API_KEY is not set")
     payload = {
-        "model": os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+        "model": (model or os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")).strip(),
         "messages": messages,
         "tools": tools or TOOLS,
         "tool_choice": "auto",

@@ -107,6 +107,18 @@ self-signup. Sessions are a signed cookie (`ENCRYPTION_KEY` is reused as
 the signing secret — no extra config needed); set `DASHBOARD_COOKIE_SECURE=false`
 only for local `http://localhost` testing.
 
+Each portal user opens **AI settings** and supplies their own DeepSeek API key.
+The key is encrypted at rest and is never included in normal settings responses.
+It is shared only by that person's own GitHub tabs. The admin user list shows
+whether a key is connected, but never exposes its value. While using **View as**,
+the admin can monitor and operate the person's GitHub jobs but cannot read or
+replace that person's AI key.
+
+For input mistakes, the person who owns the key has a one-hour recovery window
+after saving it. Revealing the key requires that person's current dashboard
+password. Once the window expires, the saved key continues working but cannot be
+displayed; the owner can replace it with a new key at any time.
+
 ## Environment
 
 Copy `.env.example` to `.env` locally. Never commit `.env`.
@@ -115,7 +127,7 @@ Copy `.env.example` to `.env` locally. Never commit `.env`.
 TELEGRAM_SOLVER_BOT_TOKEN=...
 TELEGRAM_OWNER_ID=123456789
 ENCRYPTION_KEY=...
-DEEPSEEK_API_KEY=...
+DEEPSEEK_API_KEY=... # fallback only for legacy Telegram-only accounts
 DEEPSEEK_MODEL=deepseek-v4-flash
 PROGRAM_LABELS=GrantFox OSS,Stellar Wave
 ASSIGNMENT_POLL_SECONDS=300

@@ -41,13 +41,13 @@
       const users = await api("/api/admin/users");
       renderUsers(users);
     } catch (err) {
-      usersBody.innerHTML = `<tr><td colspan="4" class="error">${esc(err.message)}</td></tr>`;
+      usersBody.innerHTML = `<tr><td colspan="5" class="error">${esc(err.message)}</td></tr>`;
     }
   }
 
   function renderUsers(users) {
     if (!users.length) {
-      usersBody.innerHTML = `<tr><td colspan="4" class="empty">No people yet.</td></tr>`;
+      usersBody.innerHTML = `<tr><td colspan="5" class="empty">No people yet.</td></tr>`;
       return;
     }
     usersBody.innerHTML = users.map((user) => `
@@ -56,6 +56,9 @@
         <td>${user.must_change_password
           ? '<span class="badge badge-warn">Must set password</span>'
           : '<span class="badge badge-ok">Active</span>'}</td>
+        <td>${user.deepseek_connected
+          ? '<span class="badge badge-ok">Connected</span>'
+          : '<span class="badge badge-warn">Key required</span>'}</td>
         <td>${esc((user.created_at || "").slice(0, 10))}</td>
         <td class="row-actions">
           <button class="btn" data-view-as="${user.id}">View as</button>

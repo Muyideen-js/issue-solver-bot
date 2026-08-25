@@ -1,7 +1,13 @@
 import pytest
 from sqlalchemy import select
 
-from app.models.database import AsyncSessionLocal, DASHBOARD_ID_PREFIX, IssueJob, SolverUser
+from app.models.database import (
+    AsyncSessionLocal,
+    DASHBOARD_ID_PREFIX,
+    IssueJob,
+    PortalUser,
+    SolverUser,
+)
 from app.services import solver_queue
 from app.services.crypto import encrypt_token
 from app.services.solver_queue import (
@@ -196,6 +202,50 @@ async def test_process_job_enforces_program_label_gate_for_telegram_accounts(mon
     async with AsyncSessionLocal() as db:
         job = await db.get(IssueJob, job_id)
     assert job.status == "SKIPPED"
+
+
+@pytest.mark.asyncio
+async def test_dashboard_account_uses_its_owners_deepseek_key(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-global-admin-key")
+    async with AsyncSessionLocal() as db:
+        owner = PortalUser(
+            username="keyowner",
+            password_hash="unused-in-this-test",
+            deepseek_api_key_encrypted=encrypt_token("sk-users-own-key"),
+            deepseek_model="deepseek-chat",
+        )
+        db.add(owner)
+        await db.flush()
+        account = SolverUser(
+            telegram_id=f"{DASHBOARD_ID_PREFIX}key-owner",
+            github_username="keyowner-gh",
+            github_token_encrypted=encrypt_token("github-token"),
+            owner_portal_user_id=owner.id,
+        )
+        db.add(account)
+        await db.flush()
+
+        key, model = await solver_queue._deepseek_credentials(db, account)
+
+    assert key == "sk-users-own-key"
+    assert model == "deepseek-chat"
+
+
+@pytest.mark.asyncio
+async def test_telegram_only_account_keeps_render_deepseek_fallback(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-render-telegram-key")
+    monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-reasoner")
+    account = SolverUser(
+        telegram_id="123456789",
+        github_username="telegram-gh",
+        github_token_encrypted=encrypt_token("github-token"),
+    )
+
+    async with AsyncSessionLocal() as db:
+        key, model = await solver_queue._deepseek_credentials(db, account)
+
+    assert key == "sk-render-telegram-key"
+    assert model == "deepseek-reasoner"
 
 
 @pytest.mark.asyncio

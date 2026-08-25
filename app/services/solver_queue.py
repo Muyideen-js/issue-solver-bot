@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from app.models.database import (
     AsyncSessionLocal,
     IssueJob,
+    PortalUser,
     SolverUser,
     is_dashboard_user,
     telegram_ids_sharing_username,
@@ -24,6 +25,27 @@ from app.services.notifications import notify
 from app.services.workspace import SolverWorkspace, WorkspaceError
 
 logger = logging.getLogger(__name__)
+
+
+class MissingUserAIKeyError(CodingAgentError):
+    pass
+
+
+async def _deepseek_credentials(db, user: SolverUser) -> tuple[str | None, str | None]:
+    """Resolve AI credentials without sharing one portal user's key with another.
+
+    Dashboard accounts must use the owning portal user's encrypted key. Legacy
+    Telegram-only accounts keep the Render environment fallback.
+    """
+    if user.owner_portal_user_id is None:
+        return os.getenv("DEEPSEEK_API_KEY"), os.getenv("DEEPSEEK_MODEL")
+    owner = await db.get(PortalUser, user.owner_portal_user_id)
+    encrypted = owner.deepseek_api_key_encrypted if owner else ""
+    if not encrypted:
+        raise MissingUserAIKeyError(
+            "Add your own DeepSeek API key in Dashboard > AI settings before solving issues"
+        )
+    return decrypt_token(encrypted), (owner.deepseek_model or None)
 
 
 async def enqueue_issue(user: SolverUser, issue: dict) -> bool:
@@ -241,6 +263,10 @@ async def _process_job(job_id: int) -> None:
                 await _process_existing_draft(job, user, token, issue, db)
             else:
                 await _implement_issue(job, user, token, issue, db)
+        except MissingUserAIKeyError as exc:
+            await _finish(job, db, "NEEDS_API_KEY", str(exc))
+            if not is_dashboard_user(user):
+                await notify(user.telegram_id, str(exc))
         except Exception as exc:
             logger.exception("Solver job %s failed", job.id)
             await _retry_or_fail(job, db, str(exc))
@@ -258,6 +284,7 @@ async def _process_job(job_id: int) -> None:
 
 
 async def _implement_issue(job, user, token: str, issue: dict, db) -> None:
+    api_key, model = await _deepseek_credentials(db, user)
     await notify(
         user.telegram_id,
         f"Starting {job.repo_full_name} issue #{job.issue_number}: {job.issue_title}",
@@ -288,6 +315,8 @@ async def _implement_issue(job, user, token: str, issue: dict, db) -> None:
                 job.issue_number,
                 issue.get("title", ""),
                 issue.get("body") or "",
+                api_key=api_key,
+                model=model,
             )
             head_sha = await workspace.commit_and_push(
                 fork["clone_url"], branch, f"fix: resolve issue #{job.issue_number}"
@@ -368,6 +397,7 @@ async def _process_existing_draft(job, user, token: str, issue: dict, db) -> Non
         )
         return
     failure_details = await gh.get_ci_failure_details(token, job.repo_full_name, current_sha)
+    api_key, model = await _deepseek_credentials(db, user)
     previous_result = _previous_result(job.result_summary)
     failure_fingerprint = _ci_failure_fingerprint(failure_details)
     repeated_failure = (
@@ -398,6 +428,8 @@ async def _process_existing_draft(job, user, token: str, issue: dict, db) -> Non
             focus_files=previous_paths,
             ci_failure_details=failure_details,
             repeated_ci_failure=repeated_failure,
+            api_key=api_key,
+            model=model,
         )
         new_sha = await workspace.commit_and_push(
             fork_url,
