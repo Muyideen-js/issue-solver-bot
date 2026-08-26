@@ -28,7 +28,16 @@
   const passwordInput = document.getElementById("password");
   const errorEl = document.getElementById("error");
 
+  const submitBtn = document.getElementById("submit");
+  let busy = false;
+
   async function submit() {
+    if (busy) return;
+    busy = true;
+    const original = submitBtn.innerHTML;
+    submitBtn.disabled = true;
+    submitBtn.classList.add("is-busy");
+    submitBtn.innerHTML = '<span class="spinner"></span>Signing in';
     errorEl.classList.add("hidden");
     try {
       const response = await fetch("/api/login", {
@@ -47,10 +56,15 @@
     } catch (err) {
       errorEl.textContent = err.message;
       errorEl.classList.remove("hidden");
+    } finally {
+      busy = false;
+      submitBtn.disabled = false;
+      submitBtn.classList.remove("is-busy");
+      submitBtn.innerHTML = original;
     }
   }
 
-  document.getElementById("submit").addEventListener("click", submit);
+  submitBtn.addEventListener("click", submit);
   passwordInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") submit();
   });

@@ -23,6 +23,28 @@
     }[c]));
   }
 
+  /** Show a spinner on the button for the duration of an async action. */
+  async function withBusy(btn, busyLabel, action) {
+    if (!btn) return action();
+    if (btn.dataset.busy === "1") return;
+    const original = btn.innerHTML;
+    const originalWidth = btn.offsetWidth;
+    btn.dataset.busy = "1";
+    btn.disabled = true;
+    btn.classList.add("is-busy");
+    btn.style.minWidth = `${originalWidth}px`;
+    btn.innerHTML = `<span class="spinner"></span>${busyLabel ? esc(busyLabel) : ""}`;
+    try {
+      return await action();
+    } finally {
+      btn.dataset.busy = "";
+      btn.disabled = false;
+      btn.classList.remove("is-busy");
+      btn.style.minWidth = "";
+      btn.innerHTML = original;
+    }
+  }
+
   async function api(path, options) {
     const response = await fetch(path, {
       headers: { "Content-Type": "application/json" },
@@ -90,34 +112,33 @@
 
   async function onRevealKey(raw, btn) {
     const [id, username] = raw.split("|");
-    btn.disabled = true;
-    try {
-      const result = await api(`/api/admin/users/${id}/deepseek-key`);
-      revealHint.textContent = `Saved by @${username}. Share it back through a secure channel.`;
-      revealValue.value = result.api_key;
-      revealExpiry.textContent = result.expires_at
-        ? `Readable until ${new Date(result.expires_at + "Z").toLocaleTimeString()}.`
-        : "";
-      revealModal.classList.remove("hidden");
-      revealValue.focus();
-      revealValue.select();
-    } catch (err) {
-      alert(err.message);
-      await loadUsers(); // an expired window should stop offering the button
-    } finally {
-      btn.disabled = false;
-    }
+    await withBusy(btn, "Loading", async () => {
+      try {
+        const result = await api(`/api/admin/users/${id}/deepseek-key`);
+        revealHint.textContent = `Saved by @${username}. Share it back through a secure channel.`;
+        revealValue.value = result.api_key;
+        revealExpiry.textContent = result.expires_at
+          ? `Readable until ${new Date(result.expires_at + "Z").toLocaleTimeString()}.`
+          : "";
+        revealModal.classList.remove("hidden");
+        revealValue.focus();
+        revealValue.select();
+      } catch (err) {
+        alert(err.message);
+        await loadUsers(); // an expired window should stop offering the button
+      }
+    });
   }
 
   async function onViewAs(userId, btn) {
-    btn.disabled = true;
-    try {
-      await api(`/api/admin/users/${userId}/view-as`, { method: "POST" });
-      window.location.href = "/dashboard";
-    } catch (err) {
-      alert(err.message);
-      btn.disabled = false;
-    }
+    await withBusy(btn, "Switching", async () => {
+      try {
+        await api(`/api/admin/users/${userId}/view-as`, { method: "POST" });
+        window.location.href = "/dashboard";
+      } catch (err) {
+        alert(err.message);
+      }
+    });
   }
 
   function openResetModal(raw) {
@@ -148,14 +169,14 @@
   async function onDelete(raw, btn) {
     const [id, username] = raw.split("|");
     if (!confirm(`Delete @${username}? This removes their login, GitHub accounts, and job history.`)) return;
-    btn.disabled = true;
-    try {
-      await api(`/api/admin/users/${id}`, { method: "DELETE" });
-      await loadUsers();
-    } catch (err) {
-      alert(err.message);
-      btn.disabled = false;
-    }
+    await withBusy(btn, "Deleting", async () => {
+      try {
+        await api(`/api/admin/users/${id}`, { method: "DELETE" });
+        await loadUsers();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
   }
 
   function openAddUserModal() {
@@ -187,11 +208,15 @@
   document.getElementById("add-user-cancel").addEventListener("click", () => {
     addUserModal.classList.add("hidden");
   });
-  document.getElementById("add-user-submit").addEventListener("click", submitAddUser);
+  const addUserSubmitBtn = document.getElementById("add-user-submit");
+  addUserSubmitBtn.addEventListener("click", () =>
+    withBusy(addUserSubmitBtn, "Creating", submitAddUser));
   document.getElementById("reset-password-cancel").addEventListener("click", () => {
     resetModal.classList.add("hidden");
   });
-  document.getElementById("reset-password-submit").addEventListener("click", submitReset);
+  const resetSubmitBtn = document.getElementById("reset-password-submit");
+  resetSubmitBtn.addEventListener("click", () =>
+    withBusy(resetSubmitBtn, "Resetting", submitReset));
   document.getElementById("reveal-key-close").addEventListener("click", () => {
     revealValue.value = "";
     revealModal.classList.add("hidden");
@@ -204,10 +229,12 @@
       document.execCommand("copy");
     }
   });
-  document.getElementById("logout-btn").addEventListener("click", async () => {
-    await api("/api/logout", { method: "POST" }).catch(() => {});
-    window.location.href = "/dashboard/login";
-  });
+  const adminLogoutBtn = document.getElementById("logout-btn");
+  adminLogoutBtn.addEventListener("click", () =>
+    withBusy(adminLogoutBtn, "Signing out", async () => {
+      await api("/api/logout", { method: "POST" }).catch(() => {});
+      window.location.href = "/dashboard/login";
+    }));
 
   loadUsers();
 })();

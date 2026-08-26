@@ -32,6 +32,35 @@
     return typeof url === "string" && url.startsWith("https://") ? url : "#";
   }
 
+  /**
+   * Run an async action while the button shows a spinner, so a slow request
+   * never leaves the button looking stagnant. The button keeps its original
+   * width to stop the row from jumping, and is restored afterwards even on
+   * failure. Re-entrant clicks are ignored while one is in flight.
+   */
+  async function withBusy(btn, busyLabel, action) {
+    if (!btn) return action();
+    if (btn.dataset.busy === "1") return;
+    const original = btn.innerHTML;
+    const originalWidth = btn.offsetWidth;
+    btn.dataset.busy = "1";
+    btn.disabled = true;
+    btn.classList.add("is-busy");
+    btn.style.minWidth = `${originalWidth}px`;
+    btn.innerHTML = `<span class="spinner"></span>${busyLabel ? esc(busyLabel) : ""}`;
+    try {
+      return await action();
+    } finally {
+      // The panel often re-renders on success, detaching this node; restoring
+      // a detached button is harmless, and matters when it survives.
+      btn.dataset.busy = "";
+      btn.disabled = false;
+      btn.classList.remove("is-busy");
+      btn.style.minWidth = "";
+      btn.innerHTML = original;
+    }
+  }
+
   async function api(path, options) {
     const response = await fetch(path, {
       headers: { "Content-Type": "application/json" },
@@ -105,17 +134,19 @@
       });
     });
     tabsEl.querySelectorAll("[data-remove]").forEach((el) => {
-      el.addEventListener("click", async (event) => {
+      el.addEventListener("click", (event) => {
         event.stopPropagation();
         const id = Number(el.dataset.remove);
         if (!confirm("Remove this account? This does not close any GitHub issues.")) return;
-        try {
-          await api(`/api/accounts/${id}`, { method: "DELETE" });
-          delete state.cache[id];
-          await loadAccounts();
-        } catch (err) {
-          alert(err.message);
-        }
+        withBusy(el, "", async () => {
+          try {
+            await api(`/api/accounts/${id}`, { method: "DELETE" });
+            delete state.cache[id];
+            await loadAccounts();
+          } catch (err) {
+            alert(err.message);
+          }
+        });
       });
     });
   }
@@ -255,8 +286,15 @@
       </section>
     `;
 
-    document.getElementById("refresh-btn").addEventListener("click", refreshPanel);
-    document.getElementById("fix-all-btn").addEventListener("click", onFixAll);
+    const refreshBtn = document.getElementById("refresh-btn");
+    refreshBtn.addEventListener("click", () => {
+      // Force a fetch even if the poller just claimed the in-flight slot,
+      // otherwise the spinner would appear and vanish without reloading.
+      state.loadingAccountId = null;
+      withBusy(refreshBtn, "Refreshing", () => refreshPanel());
+    });
+    const fixAllBtn = document.getElementById("fix-all-btn");
+    fixAllBtn.addEventListener("click", () => onFixAll(fixAllBtn));
     panelEl.querySelectorAll("[data-fix]").forEach((btn) => {
       btn.addEventListener("click", () => onFix(btn.dataset.fix, btn));
     });
@@ -278,76 +316,78 @@
 
   async function onFix(raw, btn) {
     const { repo, number, title, url } = parseKey(raw);
-    btn.disabled = true;
-    try {
-      await api(`/api/accounts/${state.activeAccountId}/issues/fix`, {
-        method: "POST",
-        body: JSON.stringify({ repo, number, title, url }),
-      });
-      await refreshPanel();
-    } catch (err) {
-      alert(err.message);
-      btn.disabled = false;
-    }
+    await withBusy(btn, "Queueing", async () => {
+      try {
+        await api(`/api/accounts/${state.activeAccountId}/issues/fix`, {
+          method: "POST",
+          body: JSON.stringify({ repo, number, title, url }),
+        });
+        await refreshPanel();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
   }
 
   async function onSkip(raw, btn) {
     const { repo, number, title, url } = parseKey(raw);
-    btn.disabled = true;
-    try {
-      await api(`/api/accounts/${state.activeAccountId}/issues/skip`, {
-        method: "POST",
-        body: JSON.stringify({ repo, number, title, url }),
-      });
-      await refreshPanel();
-    } catch (err) {
-      alert(err.message);
-      btn.disabled = false;
-    }
+    await withBusy(btn, "Skipping", async () => {
+      try {
+        await api(`/api/accounts/${state.activeAccountId}/issues/skip`, {
+          method: "POST",
+          body: JSON.stringify({ repo, number, title, url }),
+        });
+        await refreshPanel();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
   }
 
   async function onUnskip(raw, btn) {
     const [repo, number] = raw.split("|");
-    btn.disabled = true;
-    try {
-      await api(`/api/accounts/${state.activeAccountId}/issues/unskip`, {
-        method: "POST",
-        body: JSON.stringify({ repo, number: Number(number) }),
-      });
-      await refreshPanel();
-    } catch (err) {
-      alert(err.message);
-      btn.disabled = false;
-    }
+    await withBusy(btn, "Restoring", async () => {
+      try {
+        await api(`/api/accounts/${state.activeAccountId}/issues/unskip`, {
+          method: "POST",
+          body: JSON.stringify({ repo, number: Number(number) }),
+        });
+        await refreshPanel();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
   }
 
   async function onMarkReady(raw, btn) {
     const [repo, number] = raw.split("|");
     if (!confirm("Enable Ready for PR now? This changes the GitHub pull request from Draft to Ready for review without waiting for CI.")) return;
-    btn.disabled = true;
-    try {
-      await api(`/api/accounts/${state.activeAccountId}/issues/mark-ready`, {
-        method: "POST",
-        body: JSON.stringify({ repo, number: Number(number) }),
-      });
-      await refreshPanel();
-    } catch (err) {
-      alert(err.message);
-      btn.disabled = false;
-    }
+    await withBusy(btn, "Updating", async () => {
+      try {
+        await api(`/api/accounts/${state.activeAccountId}/issues/mark-ready`, {
+          method: "POST",
+          body: JSON.stringify({ repo, number: Number(number) }),
+        });
+        await refreshPanel();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
   }
 
-  async function onFixAll() {
+  async function onFixAll(btn) {
     if (!confirm("Queue every currently listed issue for this account?")) return;
-    try {
-      const result = await api(`/api/accounts/${state.activeAccountId}/issues/fix-all`, {
-        method: "POST",
-      });
-      alert(`Found ${result.discovered} issue(s); queued ${result.queued} new job(s).`);
-      await refreshPanel();
-    } catch (err) {
-      alert(err.message);
-    }
+    await withBusy(btn, "Queueing", async () => {
+      try {
+        const result = await api(`/api/accounts/${state.activeAccountId}/issues/fix-all`, {
+          method: "POST",
+        });
+        alert(`Found ${result.discovered} issue(s); queued ${result.queued} new job(s).`);
+        await refreshPanel();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
   }
 
   function openModal() {
@@ -442,52 +482,64 @@
     }
   }
 
+  const addAccountSubmitBtn = document.getElementById("add-account-submit");
+  const deepseekSaveBtn = document.getElementById("deepseek-save");
+  const logoutBtn = document.getElementById("logout-btn");
+  const exitViewAsBtn = document.getElementById("exit-view-as-btn");
+
   document.getElementById("add-account-btn").addEventListener("click", openModal);
   document.getElementById("add-account-cancel").addEventListener("click", closeModal);
-  document.getElementById("add-account-submit").addEventListener("click", submitAddAccount);
+  addAccountSubmitBtn.addEventListener("click", () =>
+    withBusy(addAccountSubmitBtn, "Adding", submitAddAccount));
   tokenInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") submitAddAccount();
+    if (event.key === "Enter") withBusy(addAccountSubmitBtn, "Adding", submitAddAccount);
   });
   document.getElementById("ai-settings-btn").addEventListener("click", openAISettings);
   document.getElementById("deepseek-cancel").addEventListener("click", closeAISettings);
-  document.getElementById("deepseek-save").addEventListener("click", saveAISettings);
-  deepseekRemoveBtn.addEventListener("click", removeAIKey);
+  deepseekSaveBtn.addEventListener("click", () =>
+    withBusy(deepseekSaveBtn, "Saving", saveAISettings));
+  deepseekRemoveBtn.addEventListener("click", () =>
+    withBusy(deepseekRemoveBtn, "Removing", removeAIKey));
 
-  document.getElementById("logout-btn").addEventListener("click", async () => {
-    await api("/api/logout", { method: "POST" }).catch(() => {});
-    window.location.href = "/dashboard/login";
-  });
+  logoutBtn.addEventListener("click", () =>
+    withBusy(logoutBtn, "Signing out", async () => {
+      await api("/api/logout", { method: "POST" }).catch(() => {});
+      window.location.href = "/dashboard/login";
+    }));
 
-  document.getElementById("exit-view-as-btn").addEventListener("click", async () => {
-    try {
-      await api("/api/admin/exit-view-as", { method: "POST" });
-      window.location.reload();
-    } catch (err) {
-      alert(err.message);
-    }
-  });
+  exitViewAsBtn.addEventListener("click", () =>
+    withBusy(exitViewAsBtn, "Exiting", async () => {
+      try {
+        await api("/api/admin/exit-view-as", { method: "POST" });
+        window.location.reload();
+      } catch (err) {
+        alert(err.message);
+      }
+    }));
 
   const changePasswordModal = document.getElementById("change-password-modal");
   const currentPasswordInput = document.getElementById("current-password");
   const newPasswordValueInput = document.getElementById("new-password-value");
   const changePasswordError = document.getElementById("change-password-error");
 
-  document.getElementById("change-password-submit").addEventListener("click", async () => {
-    changePasswordError.classList.add("hidden");
-    try {
-      await api("/api/change-password", {
-        method: "POST",
-        body: JSON.stringify({
-          current_password: currentPasswordInput.value,
-          new_password: newPasswordValueInput.value,
-        }),
-      });
-      changePasswordModal.classList.add("hidden");
-    } catch (err) {
-      changePasswordError.textContent = err.message;
-      changePasswordError.classList.remove("hidden");
-    }
-  });
+  const changePasswordBtn = document.getElementById("change-password-submit");
+  changePasswordBtn.addEventListener("click", () =>
+    withBusy(changePasswordBtn, "Saving", async () => {
+      changePasswordError.classList.add("hidden");
+      try {
+        await api("/api/change-password", {
+          method: "POST",
+          body: JSON.stringify({
+            current_password: currentPasswordInput.value,
+            new_password: newPasswordValueInput.value,
+          }),
+        });
+        changePasswordModal.classList.add("hidden");
+      } catch (err) {
+        changePasswordError.textContent = err.message;
+        changePasswordError.classList.remove("hidden");
+      }
+    }));
 
   async function initSession() {
     const me = await api("/api/me");

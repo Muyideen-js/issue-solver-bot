@@ -92,6 +92,24 @@ button, input { font: inherit; }
 .btn-danger { border-color: #e2a6ad; color: var(--danger); }
 .btn-danger:hover { background: var(--danger-soft); border-color: var(--danger); color: var(--danger); }
 .btn:disabled { opacity: 0.48; cursor: default; }
+.btn.is-busy { opacity: 1; cursor: progress; }
+
+/* The global reset forces square corners, so the spinner needs !important. */
+.spinner {
+  width: 0.85em;
+  height: 0.85em;
+  flex: 0 0 auto;
+  display: inline-block;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50% !important;
+  animation: spin 0.6s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation-duration: 1.6s; }
+}
 
 .dashboard-shell {
   width: min(1680px, 100%);
