@@ -708,6 +708,81 @@ def test_mark_ready_requires_a_tracked_draft_pr(monkeypatch):
     assert response.status_code == 404
 
 
+def test_recheck_pr_resets_a_completed_job_for_current_ci(monkeypatch):
+    admin = _login_admin(monkeypatch)
+    account = asyncio.run(_add_dashboard_account(admin.id))
+    job = asyncio.run(_add_job(
+        account.telegram_id, "o/r", 11, status="DONE",
+        draft_pr_number=44, draft_pr_url="https://github.com/o/r/pull/44",
+        attempts=3, repair_attempts=2, ci_polls=8, head_sha="oldsha",
+    ))
+
+    async def fake_get_pr(token, repo, number):
+        return {"state": "open", "draft": False, "head": {"sha": "currentsha"}}
+
+    monkeypatch.setattr(gh, "get_pr", fake_get_pr)
+
+    response = client.post(
+        f"/api/accounts/{account.id}/issues/recheck",
+        json={"repo": "o/r", "number": 11},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json() == {"queued": True, "pr_number": 44}
+
+    async def read_job():
+        async with AsyncSessionLocal() as db:
+            return await db.get(IssueJob, job.id)
+
+    refreshed = asyncio.run(read_job())
+    assert refreshed.status == "WAITING_CI"
+    assert refreshed.attempts == 0
+    assert refreshed.repair_attempts == 0
+    assert refreshed.ci_polls == 0
+    assert refreshed.head_sha is None
+    assert refreshed.last_error == "Dashboard requested a fresh PR and CI recheck"
+
+
+def test_recheck_pr_rejects_active_or_missing_pr_jobs(monkeypatch):
+    admin = _login_admin(monkeypatch)
+    account = asyncio.run(_add_dashboard_account(admin.id))
+    asyncio.run(_add_job(
+        account.telegram_id, "o/r", 12, status="WAITING_CI",
+        draft_pr_number=45, draft_pr_url="https://github.com/o/r/pull/45",
+    ))
+
+    active = client.post(
+        f"/api/accounts/{account.id}/issues/recheck",
+        json={"repo": "o/r", "number": 12},
+    )
+    missing = client.post(
+        f"/api/accounts/{account.id}/issues/recheck",
+        json={"repo": "o/r", "number": 13},
+    )
+
+    assert active.status_code == 409
+    assert missing.status_code == 404
+
+
+def test_recheck_pr_rejects_closed_pull_request(monkeypatch):
+    admin = _login_admin(monkeypatch)
+    account = asyncio.run(_add_dashboard_account(admin.id))
+    asyncio.run(_add_job(
+        account.telegram_id, "o/r", 14, status="FAILED",
+        draft_pr_number=46, draft_pr_url="https://github.com/o/r/pull/46",
+    ))
+
+    async def fake_get_pr(token, repo, number):
+        return {"state": "closed", "draft": False, "head": {"sha": "sha"}}
+
+    monkeypatch.setattr(gh, "get_pr", fake_get_pr)
+
+    response = client.post(
+        f"/api/accounts/{account.id}/issues/recheck",
+        json={"repo": "o/r", "number": 14},
+    )
+    assert response.status_code == 409
+
+
 def test_fix_all_queues_every_unrestricted_issue(monkeypatch):
     admin = _login_admin(monkeypatch)
     account = asyncio.run(_add_dashboard_account(admin.id))

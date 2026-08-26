@@ -25,7 +25,11 @@ from app.models.database import (
 from app.services import github as gh
 from app.services.crypto import decrypt_token, encrypt_token
 from app.services.password import hash_password, verify_password
-from app.services.solver_queue import enqueue_issue, queue_all_issues_for_account
+from app.services.solver_queue import (
+    _reset_job_for_retry,
+    enqueue_issue,
+    queue_all_issues_for_account,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -704,6 +708,48 @@ async def mark_issue_ready(
         job.last_error = "Manually marked ready for review by operator"
         await db.commit()
     return {"ready": True}
+
+
+@router.post("/api/accounts/{account_id}/issues/recheck")
+async def recheck_issue_pr(
+    account_id: int, payload: IssueRef, scope_user: PortalUser = Depends(current_scope_user)
+):
+    """Recheck an existing solver PR and repair it if its current CI fails."""
+    _validate_repo(payload.repo)
+    async with AsyncSessionLocal() as db:
+        account = await _get_dashboard_account(db, account_id, scope_user)
+        sibling_ids = await telegram_ids_sharing_username(db, account.github_username)
+        job_result = await db.execute(
+            select(IssueJob).where(
+                IssueJob.telegram_id.in_(sibling_ids),
+                IssueJob.repo_full_name == payload.repo,
+                IssueJob.issue_number == payload.number,
+            )
+        )
+        shared_jobs = _coalesce_jobs(list(job_result.scalars()))
+        job = shared_jobs[0] if shared_jobs else None
+        if not job or not job.draft_pr_number:
+            raise HTTPException(status_code=404, detail="No solver PR is tracked for this issue")
+        if job.status in ACTIVE_STATUSES:
+            raise HTTPException(
+                status_code=409,
+                detail="This PR is already being checked by the solver",
+            )
+
+        token = decrypt_token(account.github_token_encrypted)
+        pull_request = await _safe_github_call(
+            gh.get_pr(token, payload.repo, job.draft_pr_number)
+        )
+        if pull_request.get("state") != "open":
+            raise HTTPException(status_code=409, detail="That PR is no longer open")
+
+        _reset_job_for_retry(
+            job,
+            reason="Dashboard requested a fresh PR and CI recheck",
+        )
+        await db.commit()
+        pr_number = job.draft_pr_number
+    return {"queued": True, "pr_number": pr_number}
 
 
 @router.post("/api/accounts/{account_id}/issues/fix-all")

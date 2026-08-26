@@ -16,7 +16,9 @@
   --ok-soft: #eaf8f1;
   --warn: #9a5b00;
   --warn-soft: #fff6df;
-  --shadow: 0 10px 28px rgba(38, 73, 128, 0.08);
+  --shadow: 0 12px 30px rgba(33, 61, 105, 0.07);
+  --font-sans: "DM Sans", "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", Consolas, monospace;
 }
 
 * { box-sizing: border-box; border-radius: 0 !important; }
@@ -26,13 +28,19 @@ html { background: var(--bg); }
 body {
   margin: 0;
   min-width: 320px;
-  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.5;
   background: var(--bg);
   color: var(--text);
   -webkit-font-smoothing: antialiased;
 }
 
 button, input { font: inherit; }
+button:focus-visible, input:focus-visible, a:focus-visible {
+  outline: 3px solid rgba(23, 105, 224, 0.24);
+  outline-offset: 2px;
+}
 
 ::-webkit-scrollbar { width: 9px; height: 9px; }
 ::-webkit-scrollbar-track { background: #edf2f8; }
@@ -48,6 +56,7 @@ button, input { font: inherit; }
   padding: 1rem clamp(1rem, 4vw, 3.5rem);
   background: var(--surface);
   border-bottom: 1px solid var(--border);
+  box-shadow: 0 4px 16px rgba(33, 61, 105, 0.04);
 }
 
 .brand { display: flex; align-items: center; gap: 0.85rem; min-width: 0; }
@@ -89,6 +98,8 @@ button, input { font: inherit; }
 .btn-primary:hover { background: var(--blue-dark); border-color: var(--blue-dark); color: #fff; }
 .btn-ready { background: #eef5ff; border-color: #8bb7f3; color: var(--blue-dark); white-space: nowrap; }
 .btn-ready:hover { background: var(--blue); border-color: var(--blue); color: #fff; }
+.btn-recheck { background: var(--surface); border-color: #8bb7f3; color: var(--blue-dark); white-space: nowrap; }
+.btn-recheck:hover { background: var(--blue-soft); border-color: var(--blue); color: var(--blue-dark); }
 .btn-danger { border-color: #e2a6ad; color: var(--danger); }
 .btn-danger:hover { background: var(--danger-soft); border-color: var(--danger); color: var(--danger); }
 .btn:disabled { opacity: 0.48; cursor: default; }
@@ -122,6 +133,7 @@ button, input { font: inherit; }
   padding: 1.4rem 1rem;
   border-right: 1px solid var(--border);
   background: var(--surface);
+  box-shadow: 6px 0 20px rgba(33, 61, 105, 0.035);
 }
 .account-sidebar-heading {
   display: flex;
@@ -173,7 +185,7 @@ button, input { font: inherit; }
   gap: 1rem;
   flex-wrap: wrap;
 }
-.workspace-heading { margin-bottom: 1.35rem; }
+.workspace-heading { margin-bottom: 1.35rem; padding-bottom: 1.15rem; border-bottom: 1px solid var(--border); }
 .workspace-heading h2 { margin: 0.18rem 0; font-size: clamp(1.4rem, 3vw, 2rem); letter-spacing: -0.04em; }
 .workspace-heading p, .section-heading p { margin: 0; color: var(--muted); font-size: 0.78rem; }
 .workspace-heading .actions, .panel-header .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
@@ -216,8 +228,8 @@ tbody tr:hover td { background: #f9fbff; }
 a { color: var(--blue-dark); text-decoration: none; }
 a:hover { color: var(--blue); text-decoration: underline; }
 .issue-link { display: inline; color: var(--text); font-weight: 680; line-height: 1.45; }
-.issue-number { display: block; margin-top: 0.18rem; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.68rem; }
-.repo-name { color: #42526b; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.72rem; }
+.issue-number { display: block; margin-top: 0.18rem; color: var(--muted); font-family: var(--font-mono); font-size: 0.68rem; }
+.repo-name { color: #42526b; font-family: var(--font-mono); font-size: 0.72rem; }
 .pr-link { display: inline-block; margin-top: 0.25rem; font-size: 0.7rem; font-weight: 700; white-space: nowrap; }
 
 .badge {
@@ -234,7 +246,8 @@ a:hover { color: var(--blue); text-decoration: underline; }
 .badge-warn { color: var(--warn); border-color: #e8c983; background: var(--warn-soft); }
 .badge-danger { color: var(--danger); border-color: #e7adb4; background: var(--danger-soft); }
 .badge-accent { color: var(--blue-dark); border-color: #9dbfea; background: var(--blue-soft); }
-.labels, .row-actions { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
+.labels, .row-actions { display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; }
+.row-actions { min-width: 170px; }
 .label-chip { padding: 0.18rem 0.38rem; border: 1px solid #d5dfec; background: #f3f6fa; color: #58677c; font-size: 0.63rem; }
 
 .empty { color: var(--muted); }

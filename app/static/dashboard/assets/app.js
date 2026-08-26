@@ -217,15 +217,18 @@
       const labels = (issue.labels || [])
         .map((label) => `<span class="label-chip">${esc(label)}</span>`)
         .join("");
-      const canFix = issue.status === "NOT_QUEUED" || issue.status === "FAILED" ||
+      const canFix = issue.status === "NOT_QUEUED" || (issue.status === "FAILED" && !issue.pr_url) ||
         (issue.status === "NEEDS_REVIEW" && !issue.pr_url);
       const canSkip = issue.status === "NOT_QUEUED";
       const canUnskip = issue.status === "SKIPPED_BY_USER";
       const canMarkReady = Boolean(issue.pr_url) && issue.status !== "DONE";
+      const canRecheck = Boolean(issue.pr_url) && !activeStatuses.has(issue.status);
       const prLink = issue.pr_url
         ? `<a class="pr-link" href="${esc(safeHref(issue.pr_url))}" target="_blank" rel="noopener">Open PR ↗</a>` : "";
       const readyBtn = canMarkReady
         ? `<button class="btn btn-ready" data-ready="${esc(issue.repo)}|${issue.number}">Enable Ready for PR</button>` : "";
+      const recheckBtn = canRecheck
+        ? `<button class="btn btn-recheck" data-recheck="${esc(issue.repo)}|${issue.number}" title="Check the current PR and repair it automatically if CI is failing">Recheck PR</button>` : "";
       return `
         <tr>
           <td><a class="issue-link" href="${esc(safeHref(issue.url))}" target="_blank" rel="noopener">${esc(issue.title)}</a><span class="issue-number">#${esc(issue.number)}</span></td>
@@ -234,6 +237,7 @@
           <td>${statusBadge(issue.status)} ${prLink}</td>
           <td class="row-actions">
             ${canFix ? `<button class="btn btn-primary" data-fix="${esc(issue.repo)}|${issue.number}|${esc(issue.title)}|${esc(issue.url)}">Fix</button>` : ""}
+            ${recheckBtn}
             ${readyBtn}
             ${canSkip ? `<button class="btn" data-skip="${esc(issue.repo)}|${issue.number}|${esc(issue.title)}|${esc(issue.url)}">Skip</button>` : ""}
             ${canUnskip ? `<button class="btn" data-unskip="${esc(issue.repo)}|${issue.number}">Unskip</button>` : ""}
@@ -243,8 +247,11 @@
 
     const jobRows = state.jobs.map((job) => {
       const canMarkReady = Boolean(job.pr_url) && job.status !== "DONE";
+      const canRecheck = Boolean(job.pr_url) && !activeStatuses.has(job.status);
       const readyBtn = canMarkReady
         ? `<button class="btn btn-ready" data-ready="${esc(job.repo)}|${job.number}">Enable Ready for PR</button>` : "";
+      const recheckBtn = canRecheck
+        ? `<button class="btn btn-recheck" data-recheck="${esc(job.repo)}|${job.number}" title="Check the current PR and repair it automatically if CI is failing">Recheck PR</button>` : "";
       return `
       <tr>
         <td><a class="issue-link" href="${esc(safeHref(job.issue_url))}" target="_blank" rel="noopener">${esc(job.title)}</a><span class="issue-number">#${esc(job.number)}</span></td>
@@ -252,7 +259,7 @@
         <td>${statusBadge(job.status)}</td>
         <td>${job.pr_url ? `<a class="pr-link" href="${esc(safeHref(job.pr_url))}" target="_blank" rel="noopener">Open PR ↗</a>` : "—"}</td>
         <td>${esc((job.last_error || "").slice(0, 140))}</td>
-        <td class="row-actions">${readyBtn}</td>
+        <td class="row-actions">${recheckBtn}${readyBtn}</td>
       </tr>`;
     }).join("");
 
@@ -278,7 +285,7 @@
         </table></div>
       </section>
       <section class="data-section">
-        <div class="section-heading"><div><h3>Solver history</h3><p>One synchronized record per issue across Telegram and dashboard.</p></div><span class="count-label">${state.jobs.length} jobs</span></div>
+        <div class="section-heading"><div><h3>Solver history</h3><p>Recheck a PR after upstream merges; failed CI will return to automatic repair.</p></div><span class="count-label">${state.jobs.length} jobs</span></div>
         <div class="table-wrap"><table>
           <thead><tr><th>Issue</th><th>Repository</th><th>Status</th><th>Pull request</th><th>Latest note</th><th>Action</th></tr></thead>
           <tbody>${jobRows || `<tr><td colspan="6"><div class="empty-state compact"><strong>No solver jobs yet</strong><span>Click Fix on an issue to start.</span></div></td></tr>`}</tbody>
@@ -306,6 +313,9 @@
     });
     panelEl.querySelectorAll("[data-ready]").forEach((btn) => {
       btn.addEventListener("click", () => onMarkReady(btn.dataset.ready, btn));
+    });
+    panelEl.querySelectorAll("[data-recheck]").forEach((btn) => {
+      btn.addEventListener("click", () => onRecheck(btn.dataset.recheck, btn));
     });
   }
 
@@ -368,6 +378,23 @@
           method: "POST",
           body: JSON.stringify({ repo, number: Number(number) }),
         });
+        await refreshPanel();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+  }
+
+  async function onRecheck(raw, btn) {
+    const [repo, number] = raw.split("|");
+    if (!confirm("Recheck this pull request now? If its current CI is failing, the solver will start a fresh automatic repair.")) return;
+    await withBusy(btn, "Queueing check", async () => {
+      try {
+        await api(`/api/accounts/${state.activeAccountId}/issues/recheck`, {
+          method: "POST",
+          body: JSON.stringify({ repo, number: Number(number) }),
+        });
+        delete state.cache[state.activeAccountId];
         await refreshPanel();
       } catch (err) {
         alert(err.message);
