@@ -109,9 +109,12 @@ self-signup. Sessions are a signed cookie (`ENCRYPTION_KEY` is reused as
 the signing secret — no extra config needed); set `DASHBOARD_COOKIE_SECURE=false`
 only for local `http://localhost` testing.
 
-Each portal user opens **AI settings** and supplies their own DeepSeek API key.
-The key is encrypted at rest and is never included in normal settings responses.
-It is shared only by that person's own GitHub tabs. While using **View as**, the
+Each portal user opens **AI settings**, chooses DeepSeek, OpenAI, or Gemini,
+selects a model, and supplies their own API key. Gemini defaults to
+`gemini-3.5-flash-lite`. The **Test connection** button makes a tiny real request
+to confirm that the selected key and model work before the user saves them. The
+key is encrypted at rest and is never included in normal settings responses. It
+is shared only by that person's own GitHub tabs. While using **View as**, the
 admin can monitor and operate the person's GitHub jobs but cannot replace that
 person's AI key.
 
@@ -142,6 +145,10 @@ TELEGRAM_OWNER_ID=123456789
 ENCRYPTION_KEY=...
 DEEPSEEK_API_KEY=... # fallback only for legacy Telegram-only accounts
 DEEPSEEK_MODEL=deepseek-v4-flash
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-4o
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-3.5-flash-lite
 PROGRAM_LABELS=GrantFox OSS,Stellar Wave
 ASSIGNMENT_POLL_SECONDS=300
 SOLVER_MAX_TURNS=30

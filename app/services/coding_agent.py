@@ -13,6 +13,7 @@ from app.services.llm_providers import (
     normalize_provider,
     provider_config,
     resolve_env_credentials,
+    resolve_model,
 )
 from app.services.workspace import SolverWorkspace, WorkspaceError
 MAX_TOOL_OUTPUT_CHARS = 12_000
@@ -460,6 +461,53 @@ async def _request_agent(
             if attempt < retries:
                 await asyncio.sleep(2 ** attempt)
     raise CodingAgentError(f"{provider_name} agent request failed: {last_error}")
+
+
+async def test_ai_connection(
+    provider: str,
+    api_key: str,
+    model: str | None = None,
+) -> dict[str, str]:
+    """Make a tiny real completion request to verify a user's AI settings."""
+    try:
+        provider_id = normalize_provider(provider)
+    except ValueError as exc:
+        raise CodingAgentError(str(exc)) from exc
+
+    config = provider_config(provider_id)
+    key = (api_key or "").strip()
+    if not key:
+        raise CodingAgentError("API key is required")
+
+    selected_model = resolve_model(provider_id, model)
+    payload = {
+        "model": selected_model,
+        "messages": [{"role": "user", "content": "Reply with OK."}],
+        "temperature": 0,
+        "max_tokens": 8,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                config["url"],
+                headers={"Authorization": f"Bearer {key}"},
+                json=payload,
+            )
+        if response.status_code >= 400:
+            detail = " ".join(response.text.split())[:500]
+            raise CodingAgentError(
+                f"{config['name']} connection failed (HTTP {response.status_code}): "
+                f"{detail or 'no response detail'}"
+            )
+        message = response.json()["choices"][0]["message"]
+        if not isinstance(message, dict):
+            raise CodingAgentError(f"{config['name']} returned an invalid response")
+    except CodingAgentError:
+        raise
+    except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
+        raise CodingAgentError(f"{config['name']} connection test failed: {exc}") from exc
+
+    return {"provider": provider_id, "model": selected_model}
 
 
 def _bounded_tool_output(output: str) -> str:

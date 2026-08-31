@@ -6,12 +6,25 @@ REQUIRED_SETTINGS = (
     "TELEGRAM_SOLVER_BOT_TOKEN",
     "TELEGRAM_OWNER_ID",
     "ENCRYPTION_KEY",
-    "DEEPSEEK_API_KEY",
 )
+
+PROVIDER_KEYS = {
+    "deepseek": "DEEPSEEK_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+}
 
 
 def validate_settings() -> None:
     missing = [name for name in REQUIRED_SETTINGS if not os.getenv(name)]
+    provider = (os.getenv("AI_PROVIDER") or "deepseek").strip().lower()
+    if provider not in PROVIDER_KEYS:
+        raise RuntimeError(
+            "AI_PROVIDER must be one of: deepseek, openai, gemini"
+        )
+    provider_key = PROVIDER_KEYS[provider]
+    if not os.getenv(provider_key):
+        missing.append(provider_key)
     if missing:
         raise RuntimeError(f"Missing required environment settings: {', '.join(missing)}")
 

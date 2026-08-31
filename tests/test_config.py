@@ -20,3 +20,14 @@ def test_valid_owner_id_is_accepted(monkeypatch):
     _required(monkeypatch)
     monkeypatch.setenv("TELEGRAM_OWNER_ID", "123456789")
     validate_settings()
+
+
+def test_gemini_can_be_the_environment_provider(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_SOLVER_BOT_TOKEN", "bot-token")
+    monkeypatch.setenv("TELEGRAM_OWNER_ID", "123456789")
+    monkeypatch.setenv("ENCRYPTION_KEY", "encryption-key")
+    monkeypatch.setenv("AI_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+
+    validate_settings()

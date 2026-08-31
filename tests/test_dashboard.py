@@ -492,6 +492,39 @@ def test_ai_settings_supports_openai_and_gemini(monkeypatch):
     assert switched.json()["provider"] == "gemini"
 
 
+def test_ai_connection_test_uses_entered_key_without_saving_it(monkeypatch):
+    _login_admin(monkeypatch)
+    observed = {}
+
+    async def fake_test(provider, api_key, model):
+        observed.update(provider=provider, api_key=api_key, model=model)
+        return {"provider": provider, "model": model}
+
+    monkeypatch.setattr(dashboard, "test_ai_connection", fake_test)
+    response = client.post(
+        "/api/settings/ai/test",
+        json={
+            "provider": "gemini",
+            "api_key": "gemini-unsaved-key",
+            "model": "gemini-3.5-flash-lite",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "connected": True,
+        "provider": "gemini",
+        "model": "gemini-3.5-flash-lite",
+    }
+    assert observed == {
+        "provider": "gemini",
+        "api_key": "gemini-unsaved-key",
+        "model": "gemini-3.5-flash-lite",
+    }
+    settings = client.get("/api/settings/ai").json()
+    assert settings["connected"] is False
+
+
 def test_reveal_key_requires_admin(monkeypatch):
     _login_admin(monkeypatch)
     created = _create_user_with_key(monkeypatch, username="victimuser")

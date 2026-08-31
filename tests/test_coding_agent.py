@@ -237,3 +237,43 @@ def test_exact_diagnostics_extracts_compiler_errors_from_action_log():
     extracted = coding_agent._extract_exact_diagnostics(details)
     assert "src/app.ts(84,22)" in extracted
     assert "normal output" not in extracted
+
+
+@pytest.mark.asyncio
+async def test_gemini_connection_test_makes_a_tiny_real_request(monkeypatch):
+    observed = {}
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"choices": [{"message": {"role": "assistant", "content": "OK"}}]}
+
+    class FakeClient:
+        def __init__(self, timeout):
+            observed["timeout"] = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def post(self, url, headers, json):
+            observed.update(url=url, headers=headers, payload=json)
+            return FakeResponse()
+
+    monkeypatch.setattr(coding_agent.httpx, "AsyncClient", FakeClient)
+    result = await coding_agent.test_ai_connection(
+        "gemini", "gemini-test-key", "gemini-3.5-flash-lite"
+    )
+
+    assert result == {
+        "provider": "gemini",
+        "model": "gemini-3.5-flash-lite",
+    }
+    assert observed["url"].endswith("/v1beta/openai/chat/completions")
+    assert observed["headers"] == {"Authorization": "Bearer gemini-test-key"}
+    assert observed["payload"]["max_tokens"] == 8
+    assert "tools" not in observed["payload"]

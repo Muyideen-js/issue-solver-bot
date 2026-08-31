@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import httpx
+from cryptography.fernet import InvalidToken
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
@@ -23,6 +24,7 @@ from app.models.database import (
     telegram_ids_sharing_username,
 )
 from app.services import github as gh
+from app.services.coding_agent import CodingAgentError, test_ai_connection
 from app.services.crypto import decrypt_token, encrypt_token
 from app.services.password import hash_password, verify_password
 from app.services.llm_providers import (
@@ -89,6 +91,12 @@ class AISettingsRequest(BaseModel):
     api_key: str | None = None
     model: str = ""
     clear: bool = False
+
+
+class AIConnectionTestRequest(BaseModel):
+    provider: str = DEFAULT_PROVIDER
+    api_key: str | None = None
+    model: str = ""
 
 
 class IssueRef(BaseModel):
@@ -408,6 +416,42 @@ async def list_providers(_: PortalUser = Depends(require_login)):
 @router.get("/api/settings/ai")
 async def get_ai_settings(user: PortalUser = Depends(require_login)):
     return _ai_settings_response(user)
+
+
+@router.post("/api/settings/ai/test")
+async def test_saved_ai_connection(
+    payload: AIConnectionTestRequest,
+    user: PortalUser = Depends(require_login),
+):
+    try:
+        provider = normalize_provider(payload.provider)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    model = payload.model.strip() or default_model(provider)
+    if not AI_MODEL_PATTERN.fullmatch(model):
+        raise HTTPException(status_code=400, detail="Invalid model name")
+
+    api_key = (payload.api_key or "").strip()
+    saved_provider = user.ai_provider or DEFAULT_PROVIDER
+    if not api_key and provider == saved_provider and user.deepseek_api_key_encrypted:
+        try:
+            api_key = decrypt_token(user.deepseek_api_key_encrypted)
+        except (InvalidToken, ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=400, detail="Saved API key could not be read") from exc
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Enter or save a {provider} API key before testing",
+        )
+    if len(api_key) < 10 or len(api_key) > 512:
+        raise HTTPException(status_code=400, detail="Invalid API key")
+
+    try:
+        result = await test_ai_connection(provider, api_key, model)
+    except CodingAgentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"connected": True, **result}
 
 
 @router.post("/api/settings/ai")

@@ -22,6 +22,7 @@
   const aiStatusEl = document.getElementById("ai-status");
   const aiErrorEl = document.getElementById("ai-error");
   const aiRemoveBtn = document.getElementById("ai-remove");
+  const aiTestBtn = document.getElementById("ai-test");
   let providerCatalog = [];
 
   function esc(value) {
@@ -512,6 +513,25 @@
     }
   }
 
+  async function testAIConnection() {
+    aiErrorEl.classList.add("hidden");
+    try {
+      const result = await api("/api/settings/ai/test", {
+        method: "POST",
+        body: JSON.stringify({
+          provider: aiProviderSelect.value,
+          api_key: aiKeyInput.value.trim() || null,
+          model: aiModelSelect.value,
+        }),
+      });
+      aiStatusEl.textContent = `${providerLabel(result.provider)} connection test passed with ${result.model}.`;
+      aiStatusEl.className = "connection-status connected";
+    } catch (err) {
+      aiErrorEl.textContent = err.message;
+      aiErrorEl.classList.remove("hidden");
+    }
+  }
+
   async function removeAIKey() {
     const provider = aiProviderSelect.value;
     if (!confirm(`Remove your ${providerLabel(provider)} key? New solver work will stop until you add another key.`)) return;
@@ -567,6 +587,8 @@
   });
   aiSaveBtn.addEventListener("click", () =>
     withBusy(aiSaveBtn, "Saving", saveAISettings));
+  aiTestBtn.addEventListener("click", () =>
+    withBusy(aiTestBtn, "Testing", testAIConnection));
   aiRemoveBtn.addEventListener("click", () =>
     withBusy(aiRemoveBtn, "Removing", removeAIKey));
 

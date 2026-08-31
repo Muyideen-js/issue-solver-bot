@@ -14,7 +14,8 @@ def test_providers_for_api_lists_all_connectors():
     assert [item["id"] for item in providers] == ["deepseek", "openai", "gemini"]
     assert "deepseek-v4-flash" in providers[0]["models"]
     assert "gpt-4o" in providers[1]["models"]
-    assert "gemini-2.0-flash" in providers[2]["models"]
+    assert providers[2]["default_model"] == "gemini-3.5-flash-lite"
+    assert "gemini-3.5-flash-lite" in providers[2]["models"]
 
 
 def test_normalize_provider_rejects_unknown_values():

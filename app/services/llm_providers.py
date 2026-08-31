@@ -22,8 +22,13 @@ PROVIDERS: dict[str, dict] = {
     "gemini": {
         "name": "Gemini",
         "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-        "default_model": "gemini-2.0-flash",
-        "models": ["gemini-2.0-flash", "gemini-2.0-pro", "gemini-1.5-pro"],
+        "default_model": "gemini-3.5-flash-lite",
+        "models": [
+            "gemini-3.5-flash-lite",
+            "gemini-2.5-flash-lite",
+            "gemini-2.5-flash",
+            "gemini-2.0-flash",
+        ],
         "env_key": "GEMINI_API_KEY",
         "env_model": "GEMINI_MODEL",
     },
