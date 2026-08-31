@@ -82,8 +82,8 @@
         <td>${user.must_change_password
           ? '<span class="badge badge-warn">Must set password</span>'
           : '<span class="badge badge-ok">Active</span>'}</td>
-        <td>${user.deepseek_connected
-          ? '<span class="badge badge-ok">Connected</span>'
+        <td>${user.ai_connected
+          ? `<span class="badge badge-ok">${esc(user.ai_provider || "deepseek")}</span>`
           : '<span class="badge badge-warn">Key required</span>'}
           ${user.deepseek_key_revealable
             ? `<button class="btn btn-ready" data-reveal="${user.id}|${esc(user.username)}">Reveal</button>`
@@ -114,8 +114,8 @@
     const [id, username] = raw.split("|");
     await withBusy(btn, "Loading", async () => {
       try {
-        const result = await api(`/api/admin/users/${id}/deepseek-key`);
-        revealHint.textContent = `Saved by @${username}. Share it back through a secure channel.`;
+        const result = await api(`/api/admin/users/${id}/ai-key`);
+        revealHint.textContent = `Saved by @${username} (${result.provider || "deepseek"}). Share it back through a secure channel.`;
         revealValue.value = result.api_key;
         revealExpiry.textContent = result.expires_at
           ? `Readable until ${new Date(result.expires_at + "Z").toLocaleTimeString()}.`

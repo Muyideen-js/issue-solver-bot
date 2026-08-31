@@ -205,6 +205,35 @@ async def test_process_job_enforces_program_label_gate_for_telegram_accounts(mon
 
 
 @pytest.mark.asyncio
+async def test_dashboard_account_uses_its_owners_ai_credentials(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-global-admin-key")
+    async with AsyncSessionLocal() as db:
+        owner = PortalUser(
+            username="keyowner",
+            password_hash="unused-in-this-test",
+            deepseek_api_key_encrypted=encrypt_token("sk-users-own-key"),
+            deepseek_model="deepseek-chat",
+            ai_provider="deepseek",
+        )
+        db.add(owner)
+        await db.flush()
+        account = SolverUser(
+            telegram_id=f"{DASHBOARD_ID_PREFIX}key-owner",
+            github_username="keyowner-gh",
+            github_token_encrypted=encrypt_token("github-token"),
+            owner_portal_user_id=owner.id,
+        )
+        db.add(account)
+        await db.flush()
+
+        key, model, provider = await solver_queue._ai_credentials(db, account)
+
+    assert key == "sk-users-own-key"
+    assert model == "deepseek-chat"
+    assert provider == "deepseek"
+
+
+@pytest.mark.asyncio
 async def test_dashboard_account_uses_its_owners_deepseek_key(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-global-admin-key")
     async with AsyncSessionLocal() as db:
@@ -229,6 +258,25 @@ async def test_dashboard_account_uses_its_owners_deepseek_key(monkeypatch):
 
     assert key == "sk-users-own-key"
     assert model == "deepseek-chat"
+
+
+@pytest.mark.asyncio
+async def test_telegram_only_account_keeps_render_ai_fallback(monkeypatch):
+    monkeypatch.setenv("AI_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-render-openai-key")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+    account = SolverUser(
+        telegram_id="123456789",
+        github_username="telegram-gh",
+        github_token_encrypted=encrypt_token("github-token"),
+    )
+
+    async with AsyncSessionLocal() as db:
+        key, model, provider = await solver_queue._ai_credentials(db, account)
+
+    assert key == "sk-render-openai-key"
+    assert model == "gpt-4o-mini"
+    assert provider == "openai"
 
 
 @pytest.mark.asyncio

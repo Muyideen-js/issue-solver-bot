@@ -25,6 +25,12 @@ from app.models.database import (
 from app.services import github as gh
 from app.services.crypto import decrypt_token, encrypt_token
 from app.services.password import hash_password, verify_password
+from app.services.llm_providers import (
+    DEFAULT_PROVIDER,
+    default_model,
+    normalize_provider,
+    providers_for_api,
+)
 from app.services.solver_queue import (
     _reset_job_for_retry,
     enqueue_issue,
@@ -73,6 +79,13 @@ class AddAccountRequest(BaseModel):
 
 
 class DeepSeekSettingsRequest(BaseModel):
+    api_key: str | None = None
+    model: str = ""
+    clear: bool = False
+
+
+class AISettingsRequest(BaseModel):
+    provider: str = DEFAULT_PROVIDER
     api_key: str | None = None
     model: str = ""
     clear: bool = False
@@ -193,13 +206,26 @@ def _key_is_revealable(user: PortalUser) -> bool:
     return bool(expires_at and expires_at > datetime.utcnow())
 
 
+def _ai_settings_response(user: PortalUser) -> dict:
+    provider = user.ai_provider or DEFAULT_PROVIDER
+    return {
+        "connected": bool(user.deepseek_api_key_encrypted),
+        "provider": provider,
+        "model": user.deepseek_model or default_model(provider),
+    }
+
+
 def _user_summary(user: PortalUser) -> dict:
     expires_at = _key_reveal_expires_at(user)
     revealable = _key_is_revealable(user)
+    provider = user.ai_provider or DEFAULT_PROVIDER
     return {
         "id": user.id,
         "username": user.username,
         "must_change_password": user.must_change_password,
+        "ai_connected": bool(user.deepseek_api_key_encrypted),
+        "ai_provider": provider,
+        "ai_model": user.deepseek_model or default_model(provider),
         "deepseek_connected": bool(user.deepseek_api_key_encrypted),
         "deepseek_key_revealable": revealable,
         "deepseek_key_reveal_expires_at": (
@@ -374,24 +400,30 @@ async def change_password(
     return {"changed": True}
 
 
-@router.get("/api/settings/deepseek")
-async def get_deepseek_settings(user: PortalUser = Depends(require_login)):
-    return {
-        "connected": bool(user.deepseek_api_key_encrypted),
-        "model": user.deepseek_model or "deepseek-v4-flash",
-    }
+@router.get("/api/providers")
+async def list_providers(_: PortalUser = Depends(require_login)):
+    return {"providers": providers_for_api()}
 
 
-@router.post("/api/settings/deepseek")
-async def save_deepseek_settings(
-    payload: DeepSeekSettingsRequest, user: PortalUser = Depends(require_login)
+@router.get("/api/settings/ai")
+async def get_ai_settings(user: PortalUser = Depends(require_login)):
+    return _ai_settings_response(user)
+
+
+@router.post("/api/settings/ai")
+async def save_ai_settings(
+    payload: AISettingsRequest, user: PortalUser = Depends(require_login)
 ):
-    model = payload.model.strip() or "deepseek-v4-flash"
+    try:
+        provider = normalize_provider(payload.provider)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    model = payload.model.strip() or default_model(provider)
     if not AI_MODEL_PATTERN.fullmatch(model):
-        raise HTTPException(status_code=400, detail="Invalid DeepSeek model name")
+        raise HTTPException(status_code=400, detail="Invalid model name")
     api_key = (payload.api_key or "").strip()
     if api_key and (len(api_key) < 10 or len(api_key) > 512):
-        raise HTTPException(status_code=400, detail="Invalid DeepSeek API key")
+        raise HTTPException(status_code=400, detail="Invalid API key")
 
     async with AsyncSessionLocal() as db:
         fresh = await db.get(PortalUser, user.id)
@@ -403,6 +435,7 @@ async def save_deepseek_settings(
             # Restart the admin read-back window on every new key, so an
             # older key never stays readable after being replaced.
             fresh.deepseek_key_saved_at = datetime.utcnow()
+        fresh.ai_provider = provider
         fresh.deepseek_model = model
 
         # Jobs stopped only because this user had no key can continue as soon
@@ -425,9 +458,29 @@ async def save_deepseek_settings(
                     job.status = "WAITING_CI" if job.draft_pr_number else "QUEUED"
                     job.attempts = 0
                     job.next_attempt_at = datetime.utcnow()
-                    job.last_error = "User DeepSeek key saved; solver resumed"
+                    job.last_error = "User AI key saved; solver resumed"
         await db.commit()
-    return {"connected": bool(fresh.deepseek_api_key_encrypted), "model": model}
+    return _ai_settings_response(fresh)
+
+
+@router.get("/api/settings/deepseek")
+async def get_deepseek_settings(user: PortalUser = Depends(require_login)):
+    return _ai_settings_response(user)
+
+
+@router.post("/api/settings/deepseek")
+async def save_deepseek_settings(
+    payload: DeepSeekSettingsRequest, user: PortalUser = Depends(require_login)
+):
+    return await save_ai_settings(
+        AISettingsRequest(
+            provider=DEFAULT_PROVIDER,
+            api_key=payload.api_key,
+            model=payload.model,
+            clear=payload.clear,
+        ),
+        user,
+    )
 
 
 @router.get("/api/me")
@@ -445,8 +498,11 @@ async def me(request: Request, user: PortalUser = Depends(require_login)):
         "username": user.username,
         "is_admin": user.is_admin,
         "must_change_password": user.must_change_password,
+        "ai_connected": bool(user.deepseek_api_key_encrypted),
+        "ai_provider": user.ai_provider or DEFAULT_PROVIDER,
+        "ai_model": user.deepseek_model or default_model(user.ai_provider),
         "deepseek_connected": bool(user.deepseek_api_key_encrypted),
-        "deepseek_model": user.deepseek_model or "deepseek-v4-flash",
+        "deepseek_model": user.deepseek_model or default_model(user.ai_provider),
         "impersonating": impersonating,
     }
 
@@ -507,9 +563,9 @@ async def reset_password(
     return {"reset": True}
 
 
-@router.get("/api/admin/users/{user_id}/deepseek-key")
-async def reveal_deepseek_key(user_id: int, admin: PortalUser = Depends(require_admin)):
-    """Read back a user's DeepSeek key within the short window after they saved it.
+@router.get("/api/admin/users/{user_id}/ai-key")
+async def reveal_ai_key(user_id: int, admin: PortalUser = Depends(require_admin)):
+    """Read back a user's AI key within the short window after they saved it.
 
     Recovery aid for someone who pasted a key and no longer has a copy; the
     window closes on its own so a stored key isn't indefinitely readable.
@@ -517,7 +573,7 @@ async def reveal_deepseek_key(user_id: int, admin: PortalUser = Depends(require_
     async with AsyncSessionLocal() as db:
         user = await _get_manageable_user(db, user_id)
         if not user.deepseek_api_key_encrypted:
-            raise HTTPException(status_code=404, detail="This user has no saved DeepSeek key")
+            raise HTTPException(status_code=404, detail="This user has no saved AI key")
         expires_at = _key_reveal_expires_at(user)
         if not _key_is_revealable(user):
             raise HTTPException(
@@ -530,13 +586,19 @@ async def reveal_deepseek_key(user_id: int, admin: PortalUser = Depends(require_
         api_key = decrypt_token(user.deepseek_api_key_encrypted)
 
     logger.info(
-        "Admin %s revealed the DeepSeek key for user %s", admin.username, user.username
+        "Admin %s revealed the AI key for user %s", admin.username, user.username
     )
     return {
         "username": user.username,
+        "provider": user.ai_provider or DEFAULT_PROVIDER,
         "api_key": api_key,
         "expires_at": expires_at.isoformat() if expires_at else None,
     }
+
+
+@router.get("/api/admin/users/{user_id}/deepseek-key")
+async def reveal_deepseek_key(user_id: int, admin: PortalUser = Depends(require_admin)):
+    return await reveal_ai_key(user_id, admin)
 
 
 @router.delete("/api/admin/users/{user_id}")

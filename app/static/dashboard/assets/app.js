@@ -16,11 +16,13 @@
   const tokenInput = document.getElementById("add-account-token");
   const addErrorEl = document.getElementById("add-account-error");
   const aiSettingsModal = document.getElementById("ai-settings-modal");
-  const deepseekKeyInput = document.getElementById("deepseek-api-key");
-  const deepseekModelInput = document.getElementById("deepseek-model");
-  const deepseekStatusEl = document.getElementById("deepseek-status");
-  const deepseekErrorEl = document.getElementById("deepseek-error");
-  const deepseekRemoveBtn = document.getElementById("deepseek-remove");
+  const aiProviderSelect = document.getElementById("ai-provider");
+  const aiKeyInput = document.getElementById("ai-api-key");
+  const aiModelSelect = document.getElementById("ai-model");
+  const aiStatusEl = document.getElementById("ai-status");
+  const aiErrorEl = document.getElementById("ai-error");
+  const aiRemoveBtn = document.getElementById("ai-remove");
+  let providerCatalog = [];
 
   function esc(value) {
     return String(value ?? "").replace(/[&<>"']/g, (c) => ({
@@ -428,22 +430,58 @@
     modalEl.classList.add("hidden");
   }
 
+  function providerLabel(providerId) {
+    const match = providerCatalog.find((item) => item.id === providerId);
+    return match ? match.name : providerId;
+  }
+
+  function populateProviderOptions(selectedProvider) {
+    aiProviderSelect.innerHTML = providerCatalog.map((provider) => `
+      <option value="${esc(provider.id)}" ${provider.id === selectedProvider ? "selected" : ""}>
+        ${esc(provider.name)}
+      </option>
+    `).join("");
+  }
+
+  function populateModelOptions(providerId, selectedModel) {
+    const provider = providerCatalog.find((item) => item.id === providerId);
+    const models = provider ? provider.models : [];
+    const fallback = provider ? provider.default_model : selectedModel;
+    const chosen = selectedModel || fallback;
+    aiModelSelect.innerHTML = models.map((model) => `
+      <option value="${esc(model)}" ${model === chosen ? "selected" : ""}>${esc(model)}</option>
+    `).join("");
+    if (!models.includes(chosen) && chosen) {
+      aiModelSelect.innerHTML += `<option value="${esc(chosen)}" selected>${esc(chosen)}</option>`;
+    }
+  }
+
+  function updateAIStatus(connected, provider) {
+    const label = providerLabel(provider);
+    aiStatusEl.textContent = connected
+      ? `Connected to ${label} — your solver jobs use your own key.`
+      : `Not connected — add a ${label} key before starting solver jobs.`;
+    aiStatusEl.className = `connection-status ${connected ? "connected" : "missing"}`;
+    aiRemoveBtn.classList.toggle("hidden", !connected);
+  }
+
   async function openAISettings() {
-    deepseekErrorEl.classList.add("hidden");
-    deepseekKeyInput.value = "";
+    aiErrorEl.classList.add("hidden");
+    aiKeyInput.value = "";
     aiSettingsModal.classList.remove("hidden");
-    deepseekStatusEl.textContent = "Checking connection...";
+    aiStatusEl.textContent = "Checking connection...";
     try {
-      const settings = await api("/api/settings/deepseek");
-      deepseekModelInput.value = settings.model || "deepseek-v4-flash";
-      deepseekStatusEl.textContent = settings.connected
-        ? "Connected — your solver jobs use your own key."
-        : "Not connected — add a key before starting solver jobs.";
-      deepseekStatusEl.className = `connection-status ${settings.connected ? "connected" : "missing"}`;
-      deepseekRemoveBtn.classList.toggle("hidden", !settings.connected);
+      const [catalog, settings] = await Promise.all([
+        api("/api/providers"),
+        api("/api/settings/ai"),
+      ]);
+      providerCatalog = catalog.providers || [];
+      populateProviderOptions(settings.provider || "deepseek");
+      populateModelOptions(settings.provider || "deepseek", settings.model);
+      updateAIStatus(settings.connected, settings.provider || "deepseek");
     } catch (err) {
-      deepseekErrorEl.textContent = err.message;
-      deepseekErrorEl.classList.remove("hidden");
+      aiErrorEl.textContent = err.message;
+      aiErrorEl.classList.remove("hidden");
     }
   }
 
@@ -452,43 +490,44 @@
   }
 
   async function saveAISettings() {
-    deepseekErrorEl.classList.add("hidden");
+    aiErrorEl.classList.add("hidden");
     try {
-      const result = await api("/api/settings/deepseek", {
+      const result = await api("/api/settings/ai", {
         method: "POST",
         body: JSON.stringify({
-          api_key: deepseekKeyInput.value.trim() || null,
-          model: deepseekModelInput.value.trim(),
+          provider: aiProviderSelect.value,
+          api_key: aiKeyInput.value.trim() || null,
+          model: aiModelSelect.value,
           clear: false,
         }),
       });
-      deepseekStatusEl.textContent = result.connected
-        ? "Connected — your solver jobs use your own key."
-        : "Not connected — add a key before starting solver jobs.";
-      deepseekStatusEl.className = `connection-status ${result.connected ? "connected" : "missing"}`;
-      deepseekKeyInput.value = "";
-      deepseekRemoveBtn.classList.toggle("hidden", !result.connected);
+      populateModelOptions(result.provider, result.model);
+      updateAIStatus(result.connected, result.provider);
+      aiKeyInput.value = "";
       delete state.cache[state.activeAccountId];
       await refreshPanel();
     } catch (err) {
-      deepseekErrorEl.textContent = err.message;
-      deepseekErrorEl.classList.remove("hidden");
+      aiErrorEl.textContent = err.message;
+      aiErrorEl.classList.remove("hidden");
     }
   }
 
   async function removeAIKey() {
-    if (!confirm("Remove your DeepSeek key? New solver work will stop until you add another key.")) return;
+    const provider = aiProviderSelect.value;
+    if (!confirm(`Remove your ${providerLabel(provider)} key? New solver work will stop until you add another key.`)) return;
     try {
-      await api("/api/settings/deepseek", {
+      await api("/api/settings/ai", {
         method: "POST",
-        body: JSON.stringify({ model: deepseekModelInput.value.trim(), clear: true }),
+        body: JSON.stringify({
+          provider,
+          model: aiModelSelect.value,
+          clear: true,
+        }),
       });
-      deepseekStatusEl.textContent = "Not connected — add a key before starting solver jobs.";
-      deepseekStatusEl.className = "connection-status missing";
-      deepseekRemoveBtn.classList.add("hidden");
+      updateAIStatus(false, provider);
     } catch (err) {
-      deepseekErrorEl.textContent = err.message;
-      deepseekErrorEl.classList.remove("hidden");
+      aiErrorEl.textContent = err.message;
+      aiErrorEl.classList.remove("hidden");
     }
   }
 
@@ -510,7 +549,7 @@
   }
 
   const addAccountSubmitBtn = document.getElementById("add-account-submit");
-  const deepseekSaveBtn = document.getElementById("deepseek-save");
+  const aiSaveBtn = document.getElementById("ai-save");
   const logoutBtn = document.getElementById("logout-btn");
   const exitViewAsBtn = document.getElementById("exit-view-as-btn");
 
@@ -522,11 +561,14 @@
     if (event.key === "Enter") withBusy(addAccountSubmitBtn, "Adding", submitAddAccount);
   });
   document.getElementById("ai-settings-btn").addEventListener("click", openAISettings);
-  document.getElementById("deepseek-cancel").addEventListener("click", closeAISettings);
-  deepseekSaveBtn.addEventListener("click", () =>
-    withBusy(deepseekSaveBtn, "Saving", saveAISettings));
-  deepseekRemoveBtn.addEventListener("click", () =>
-    withBusy(deepseekRemoveBtn, "Removing", removeAIKey));
+  document.getElementById("ai-cancel").addEventListener("click", closeAISettings);
+  aiProviderSelect.addEventListener("change", () => {
+    populateModelOptions(aiProviderSelect.value, null);
+  });
+  aiSaveBtn.addEventListener("click", () =>
+    withBusy(aiSaveBtn, "Saving", saveAISettings));
+  aiRemoveBtn.addEventListener("click", () =>
+    withBusy(aiRemoveBtn, "Removing", removeAIKey));
 
   logoutBtn.addEventListener("click", () =>
     withBusy(logoutBtn, "Signing out", async () => {

@@ -21,6 +21,7 @@ from app.models.database import (
 from app.services import github as gh
 from app.services.coding_agent import CodingAgentError, solve_issue
 from app.services.crypto import decrypt_token
+from app.services.llm_providers import DEFAULT_PROVIDER, resolve_env_credentials
 from app.services.notifications import notify
 from app.services.workspace import SolverWorkspace, WorkspaceError
 
@@ -31,21 +32,32 @@ class MissingUserAIKeyError(CodingAgentError):
     pass
 
 
-async def _deepseek_credentials(db, user: SolverUser) -> tuple[str | None, str | None]:
+async def _ai_credentials(
+    db, user: SolverUser
+) -> tuple[str | None, str | None, str]:
     """Resolve AI credentials without sharing one portal user's key with another.
 
     Dashboard accounts must use the owning portal user's encrypted key. Legacy
     Telegram-only accounts keep the Render environment fallback.
     """
     if user.owner_portal_user_id is None:
-        return os.getenv("DEEPSEEK_API_KEY"), os.getenv("DEEPSEEK_MODEL")
+        provider = os.getenv("AI_PROVIDER", DEFAULT_PROVIDER)
+        api_key, model = resolve_env_credentials(provider)
+        return api_key, model, provider
     owner = await db.get(PortalUser, user.owner_portal_user_id)
     encrypted = owner.deepseek_api_key_encrypted if owner else ""
+    provider = (owner.ai_provider if owner else None) or DEFAULT_PROVIDER
     if not encrypted:
         raise MissingUserAIKeyError(
-            "Add your own DeepSeek API key in Dashboard > AI settings before solving issues"
+            "Add your own AI API key in Dashboard > AI settings before solving issues"
         )
-    return decrypt_token(encrypted), (owner.deepseek_model or None)
+    return decrypt_token(encrypted), (owner.deepseek_model or None), provider
+
+
+async def _deepseek_credentials(db, user: SolverUser) -> tuple[str | None, str | None]:
+    """Backward-compatible wrapper returning only key and model."""
+    api_key, model, _provider = await _ai_credentials(db, user)
+    return api_key, model
 
 
 async def enqueue_issue(user: SolverUser, issue: dict) -> bool:
@@ -284,7 +296,7 @@ async def _process_job(job_id: int) -> None:
 
 
 async def _implement_issue(job, user, token: str, issue: dict, db) -> None:
-    api_key, model = await _deepseek_credentials(db, user)
+    api_key, model, provider = await _ai_credentials(db, user)
     await notify(
         user.telegram_id,
         f"Starting {job.repo_full_name} issue #{job.issue_number}: {job.issue_title}",
@@ -317,6 +329,7 @@ async def _implement_issue(job, user, token: str, issue: dict, db) -> None:
                 issue.get("body") or "",
                 api_key=api_key,
                 model=model,
+                provider=provider,
             )
             head_sha = await workspace.commit_and_push(
                 fork["clone_url"], branch, f"fix: resolve issue #{job.issue_number}"
@@ -397,7 +410,7 @@ async def _process_existing_draft(job, user, token: str, issue: dict, db) -> Non
         )
         return
     failure_details = await gh.get_ci_failure_details(token, job.repo_full_name, current_sha)
-    api_key, model = await _deepseek_credentials(db, user)
+    api_key, model, provider = await _ai_credentials(db, user)
     previous_result = _previous_result(job.result_summary)
     failure_fingerprint = _ci_failure_fingerprint(failure_details)
     repeated_failure = (
@@ -430,6 +443,7 @@ async def _process_existing_draft(job, user, token: str, issue: dict, db) -> Non
             repeated_ci_failure=repeated_failure,
             api_key=api_key,
             model=model,
+            provider=provider,
         )
         new_sha = await workspace.commit_and_push(
             fork_url,

@@ -68,23 +68,27 @@
 
 <div id="ai-settings-modal" class="modal hidden">
   <div class="modal-card">
-    <h2>Your DeepSeek connection</h2>
+    <h2>AI provider settings</h2>
     <p class="hint">Your key is encrypted at rest and used only for your own solver jobs.</p>
-    <div id="deepseek-status" class="connection-status">Checking connection...</div>
+    <div id="ai-status" class="connection-status">Checking connection...</div>
     <div class="form-row">
-      <label>DeepSeek API key</label>
-      <input id="deepseek-api-key" type="password" placeholder="Leave blank to keep the saved key" autocomplete="off">
+      <label>Provider</label>
+      <select id="ai-provider"></select>
+    </div>
+    <div class="form-row">
+      <label>API key</label>
+      <input id="ai-api-key" type="password" placeholder="Leave blank to keep the saved key" autocomplete="off">
     </div>
     <div class="form-row">
       <label>Model</label>
-      <input id="deepseek-model" type="text" value="deepseek-v4-flash" maxlength="80" autocomplete="off">
+      <select id="ai-model"></select>
     </div>
-    <p id="deepseek-error" class="error hidden"></p>
+    <p id="ai-error" class="error hidden"></p>
     <div class="modal-actions split-actions">
-      <button id="deepseek-remove" class="btn btn-danger hidden">Remove key</button>
+      <button id="ai-remove" class="btn btn-danger hidden">Remove key</button>
       <span class="action-spacer"></span>
-      <button id="deepseek-cancel" class="btn">Cancel</button>
-      <button id="deepseek-save" class="btn btn-primary">Save connection</button>
+      <button id="ai-cancel" class="btn">Cancel</button>
+      <button id="ai-save" class="btn btn-primary">Save connection</button>
     </div>
   </div>
 </div>

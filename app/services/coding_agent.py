@@ -1,4 +1,4 @@
-"""DeepSeek coding agent with restricted repository file tools."""
+"""Multi-provider coding agent with restricted repository file tools."""
 import asyncio
 import json
 import logging
@@ -7,9 +7,14 @@ import re
 
 import httpx
 
+from app.services.llm_providers import (
+    DEFAULT_PROVIDER,
+    build_chat_payload,
+    normalize_provider,
+    provider_config,
+    resolve_env_credentials,
+)
 from app.services.workspace import SolverWorkspace, WorkspaceError
-
-DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
 MAX_TOOL_OUTPUT_CHARS = 12_000
 MAX_RETAINED_TOOL_OUTPUT_CHARS = 48_000
 COMPACTED_TOOL_PREFIX = "[Earlier tool output compacted"
@@ -174,6 +179,7 @@ async def solve_issue(
     repeated_ci_failure: bool = False,
     api_key: str | None = None,
     model: str | None = None,
+    provider: str | None = None,
 ) -> dict:
     """Run a bounded read/search/write agent loop and return its PR summary."""
     repair_mode = mode == "repair"
@@ -267,6 +273,7 @@ cast is proven safe by the compiler's inferred type.
             tools=available_tools,
             api_key=api_key,
             model=model,
+            provider=provider,
         )
         assistant_message = _assistant_history_message(message)
         messages.append(assistant_message)
@@ -411,38 +418,40 @@ async def _request_agent(
     tools: list[dict] | None = None,
     api_key: str | None = None,
     model: str | None = None,
+    provider: str | None = None,
 ) -> dict:
-    api_key = (api_key or os.getenv("DEEPSEEK_API_KEY") or "").strip()
+    try:
+        provider_id = normalize_provider(provider or DEFAULT_PROVIDER)
+    except ValueError as exc:
+        raise CodingAgentError(str(exc)) from exc
+    config = provider_config(provider_id)
     if not api_key:
-        raise CodingAgentError("DEEPSEEK_API_KEY is not set")
-    payload = {
-        "model": (model or os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")).strip(),
-        "messages": messages,
-        "tools": tools or TOOLS,
-        "tool_choice": "auto",
-        "temperature": 0.1,
-        "max_tokens": 8192,
-        "thinking": {"type": "disabled"},
-    }
+        env_key, _ = resolve_env_credentials(provider_id)
+        api_key = env_key or ""
+    api_key = api_key.strip()
+    if not api_key:
+        raise CodingAgentError(f"{config['env_key']} is not set")
+    payload = build_chat_payload(provider_id, messages, tools or TOOLS, model)
+    provider_name = config["name"]
     last_error = None
     for attempt in range(retries + 1):
         try:
             async with httpx.AsyncClient(timeout=120) as client:
                 response = await client.post(
-                    DEEPSEEK_URL,
+                    config["url"],
                     headers={"Authorization": f"Bearer {api_key}"},
                     json=payload,
                 )
             if 400 <= response.status_code < 500 and response.status_code != 429:
                 detail = " ".join(response.text.split())[:800]
                 raise CodingAgentError(
-                    f"DeepSeek rejected the agent request (HTTP {response.status_code}): "
+                    f"{provider_name} rejected the agent request (HTTP {response.status_code}): "
                     f"{detail or 'no response detail'}"
                 )
             response.raise_for_status()
             message = response.json()["choices"][0]["message"]
             if not isinstance(message, dict):
-                raise CodingAgentError("DeepSeek returned an invalid agent message")
+                raise CodingAgentError(f"{provider_name} returned an invalid agent message")
             return message
         except CodingAgentError:
             raise
@@ -450,7 +459,7 @@ async def _request_agent(
             last_error = exc
             if attempt < retries:
                 await asyncio.sleep(2 ** attempt)
-    raise CodingAgentError(f"DeepSeek agent request failed: {last_error}")
+    raise CodingAgentError(f"{provider_name} agent request failed: {last_error}")
 
 
 def _bounded_tool_output(output: str) -> str:
@@ -523,7 +532,7 @@ def _compact_tool_history(messages: list[dict]) -> None:
 
 
 def _assistant_history_message(message: dict) -> dict:
-    """Serialize a DeepSeek response without invalid empty tool_calls arrays."""
+    """Serialize an LLM response without invalid empty tool_calls arrays."""
     tool_calls = message.get("tool_calls") or []
     history = {"role": "assistant", "content": message.get("content")}
     if tool_calls:

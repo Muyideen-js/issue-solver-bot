@@ -196,7 +196,11 @@ def test_each_portal_user_stores_a_private_encrypted_deepseek_key(monkeypatch):
         json={"api_key": raw_key, "model": "deepseek-chat"},
     )
     assert saved.status_code == 200, saved.text
-    assert saved.json() == {"connected": True, "model": "deepseek-chat"}
+    assert saved.json() == {
+        "connected": True,
+        "provider": "deepseek",
+        "model": "deepseek-chat",
+    }
 
     async def read_admin():
         async with AsyncSessionLocal() as db:
@@ -208,7 +212,11 @@ def test_each_portal_user_stores_a_private_encrypted_deepseek_key(monkeypatch):
 
     settings = client.get("/api/settings/deepseek")
     assert settings.status_code == 200
-    assert settings.json() == {"connected": True, "model": "deepseek-chat"}
+    assert settings.json() == {
+        "connected": True,
+        "provider": "deepseek",
+        "model": "deepseek-chat",
+    }
     assert raw_key not in settings.text
 
 
@@ -400,7 +408,7 @@ def test_admin_can_reveal_a_recently_saved_key(monkeypatch):
 
     listed = client.get("/api/admin/users").json()
     row = next(user for user in listed if user["id"] == created["id"])
-    assert row["deepseek_connected"] is True
+    assert row["ai_connected"] is True
     assert row["deepseek_key_revealable"] is True
 
     response = client.get(f"/api/admin/users/{created['id']}/deepseek-key")
@@ -418,7 +426,7 @@ def test_reveal_window_closes_after_an_hour(monkeypatch):
 
     listed = client.get("/api/admin/users").json()
     row = next(user for user in listed if user["id"] == created["id"])
-    assert row["deepseek_connected"] is True  # key still works for solving
+    assert row["ai_connected"] is True  # key still works for solving
     assert row["deepseek_key_revealable"] is False  # but is no longer readable
 
     response = client.get(f"/api/admin/users/{created['id']}/deepseek-key")
@@ -455,6 +463,33 @@ def test_clearing_a_key_ends_the_reveal_window(monkeypatch):
 
     response = client.get(f"/api/admin/users/{created['id']}/deepseek-key")
     assert response.status_code == 404
+
+
+def test_ai_settings_supports_openai_and_gemini(monkeypatch):
+    _login_admin(monkeypatch)
+
+    providers = client.get("/api/providers")
+    assert providers.status_code == 200
+    ids = {item["id"] for item in providers.json()["providers"]}
+    assert ids == {"deepseek", "openai", "gemini"}
+
+    saved = client.post(
+        "/api/settings/ai",
+        json={"provider": "openai", "api_key": "sk-openai-user-key", "model": "gpt-4o-mini"},
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json() == {
+        "connected": True,
+        "provider": "openai",
+        "model": "gpt-4o-mini",
+    }
+
+    switched = client.post(
+        "/api/settings/ai",
+        json={"provider": "gemini", "api_key": "gemini-user-key-123", "model": "gemini-2.0-flash"},
+    )
+    assert switched.status_code == 200, switched.text
+    assert switched.json()["provider"] == "gemini"
 
 
 def test_reveal_key_requires_admin(monkeypatch):
