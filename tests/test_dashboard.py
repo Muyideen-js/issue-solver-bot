@@ -689,6 +689,14 @@ def test_fix_issue_enqueues_job(monkeypatch):
     admin = _login_admin(monkeypatch)
     account = asyncio.run(_add_dashboard_account(admin.id))
 
+    async def pause_dashboard_account():
+        async with AsyncSessionLocal() as db:
+            stored = await db.get(SolverUser, account.id)
+            stored.paused = True
+            await db.commit()
+
+    asyncio.run(pause_dashboard_account())
+
     async def fake_get_issue(token, repo, number):
         return {
             "number": number, "title": "Needs a fix",
@@ -709,12 +717,32 @@ def test_fix_issue_enqueues_job(monkeypatch):
     assert len(jobs) == 1
     assert jobs[0]["status"] == "QUEUED"
 
+    async def read_account():
+        async with AsyncSessionLocal() as db:
+            return await db.get(SolverUser, account.id)
+
+    assert asyncio.run(read_account()).paused is False
+
 
 def test_retry_now_releases_a_delayed_queued_job(monkeypatch):
     admin = _login_admin(monkeypatch)
-    account = asyncio.run(_add_dashboard_account(admin.id))
+    account = asyncio.run(_add_dashboard_account(admin.id, username="retry-user"))
+
+    async def add_paused_telegram_sibling():
+        async with AsyncSessionLocal() as db:
+            db.add(SolverUser(
+                telegram_id="123456789",
+                github_username="retry-user",
+                github_token_encrypted=encrypt_token("telegram-token"),
+                paused=True,
+            ))
+            dashboard_account = await db.get(SolverUser, account.id)
+            dashboard_account.paused = True
+            await db.commit()
+
+    asyncio.run(add_paused_telegram_sibling())
     job = asyncio.run(_add_job(
-        account.telegram_id,
+        "123456789",
         "o/r",
         18,
         status="QUEUED",
@@ -737,9 +765,18 @@ def test_retry_now_releases_a_delayed_queued_job(monkeypatch):
             return await db.get(IssueJob, job.id)
 
     refreshed = asyncio.run(read_job())
+    assert refreshed.telegram_id == account.telegram_id
     assert refreshed.attempts == 0
     assert before <= refreshed.next_attempt_at <= datetime.utcnow()
-    assert refreshed.last_error == "Manual Retry now requested from the dashboard"
+    assert refreshed.last_error == (
+        "Dashboard Retry now requested; moved to the active site account"
+    )
+
+    async def read_account():
+        async with AsyncSessionLocal() as db:
+            return await db.get(SolverUser, account.id)
+
+    assert asyncio.run(read_account()).paused is False
 
     listed = client.get(f"/api/accounts/{account.id}/jobs").json()
     assert listed[0]["next_attempt_at"] is not None

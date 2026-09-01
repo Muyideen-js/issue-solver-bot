@@ -187,6 +187,46 @@ async def _get_dashboard_account(db, account_id: int, owner: PortalUser) -> Solv
     return account
 
 
+async def _adopt_retryable_job(
+    db,
+    account: SolverUser,
+    repo: str,
+    issue_number: int,
+    reason: str,
+) -> tuple[IssueJob | None, list[IssueJob]]:
+    """Move an old Telegram-owned queued job onto the active dashboard account."""
+    account.paused = False
+    sibling_ids = await telegram_ids_sharing_username(db, account.github_username)
+    result = await db.execute(
+        select(IssueJob).where(
+            IssueJob.telegram_id.in_(sibling_ids),
+            IssueJob.repo_full_name == repo,
+            IssueJob.issue_number == issue_number,
+        )
+    )
+    jobs = list(result.scalars())
+    retryable = [job for job in jobs if job.status in {"QUEUED", "WAITING_CI"}]
+    if not retryable:
+        return None, jobs
+
+    # Prefer the job already owned by this dashboard account. Otherwise adopt
+    # the old Telegram job, so its paused flag and legacy provider no longer
+    # control an explicit action made on the site.
+    job = next(
+        (item for item in retryable if item.telegram_id == account.telegram_id),
+        retryable[0],
+    )
+    if job.telegram_id != account.telegram_id:
+        if any(item.telegram_id == account.telegram_id for item in jobs):
+            return None, jobs
+        job.telegram_id = account.telegram_id
+
+    job.next_attempt_at = datetime.utcnow()
+    job.attempts = 0
+    job.last_error = reason
+    return job, jobs
+
+
 async def _get_manageable_user(db, user_id: int) -> PortalUser:
     user = await db.get(PortalUser, user_id)
     if not user or user.is_admin:
@@ -773,6 +813,8 @@ async def fix_issue(
     _validate_repo(payload.repo)
     async with AsyncSessionLocal() as db:
         account = await _get_dashboard_account(db, account_id, scope_user)
+        account.paused = False
+        await db.commit()
     token = decrypt_token(account.github_token_encrypted)
     issue = await _safe_github_call(gh.get_issue(token, payload.repo, payload.number))
     if not gh.is_open_and_assigned(issue, account.github_username):
@@ -780,6 +822,18 @@ async def fix_issue(
             status_code=409, detail="Issue is no longer open and assigned to this account"
         )
     queued = await enqueue_issue(account, issue)
+    if not queued:
+        async with AsyncSessionLocal() as db:
+            fresh_account = await _get_dashboard_account(db, account_id, scope_user)
+            adopted, _ = await _adopt_retryable_job(
+                db,
+                fresh_account,
+                payload.repo,
+                payload.number,
+                "Dashboard Fix requested; moved to the active site account",
+            )
+            await db.commit()
+            queued = adopted is not None
     return {"queued": queued}
 
 
@@ -791,29 +845,24 @@ async def retry_issue_now(
     _validate_repo(payload.repo)
     async with AsyncSessionLocal() as db:
         account = await _get_dashboard_account(db, account_id, scope_user)
-        sibling_ids = await telegram_ids_sharing_username(db, account.github_username)
-        result = await db.execute(
-            select(IssueJob).where(
-                IssueJob.telegram_id.in_(sibling_ids),
-                IssueJob.repo_full_name == payload.repo,
-                IssueJob.issue_number == payload.number,
-            )
+        job, jobs = await _adopt_retryable_job(
+            db,
+            account,
+            payload.repo,
+            payload.number,
+            "Dashboard Retry now requested; moved to the active site account",
         )
-        shared_jobs = _coalesce_jobs(list(result.scalars()))
-        job = shared_jobs[0] if shared_jobs else None
         if not job:
-            raise HTTPException(status_code=404, detail="Solver job not found")
-        if job.status == "PROCESSING":
-            raise HTTPException(status_code=409, detail="This issue is already processing")
-        if job.status not in {"QUEUED", "WAITING_CI"}:
+            shared_jobs = _coalesce_jobs(jobs)
+            existing = shared_jobs[0] if shared_jobs else None
+            if not existing:
+                raise HTTPException(status_code=404, detail="Solver job not found")
+            if existing.status == "PROCESSING":
+                raise HTTPException(status_code=409, detail="This issue is already processing")
             raise HTTPException(
                 status_code=409,
-                detail=f"Retry now is only available for queued jobs, not {job.status}",
+                detail=f"Retry now is only available for queued jobs, not {existing.status}",
             )
-
-        job.next_attempt_at = datetime.utcnow()
-        job.attempts = 0
-        job.last_error = "Manual Retry now requested from the dashboard"
         await db.commit()
         status = job.status
     return {"queued": True, "status": status}
