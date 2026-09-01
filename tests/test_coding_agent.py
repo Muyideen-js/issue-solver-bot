@@ -164,6 +164,58 @@ async def test_agent_preserves_changed_draft_at_turn_limit(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_implementation_agent_is_forced_from_discovery_into_editing(monkeypatch):
+    monkeypatch.setenv("SOLVER_MAX_TURNS", "8")
+    tool_sets = []
+
+    async def fake_request(messages, **kwargs):
+        names = {item["function"]["name"] for item in kwargs["tools"]}
+        tool_sets.append(names)
+        call_number = len(tool_sets)
+        if call_number <= 6:
+            return {"content": "Still investigating.", "tool_calls": []}
+        if call_number == 7:
+            return {
+                "content": None,
+                "tool_calls": [{
+                    "id": "edit-1",
+                    "function": {
+                        "name": "replace_text",
+                        "arguments": (
+                            '{"path":"src/app.py","old_text":"old","new_text":"new",'
+                            '"expected_replacements":1}'
+                        ),
+                    },
+                }],
+            }
+        return {
+            "content": None,
+            "tool_calls": [
+                {"id": "diff-1", "function": {"name": "inspect_diff", "arguments": "{}"}},
+                {
+                    "id": "finish-1",
+                    "function": {
+                        "name": "finish",
+                        "arguments": '{"summary":"implemented","test_plan":"run CI"}',
+                    },
+                },
+            ],
+        }
+
+    monkeypatch.setattr(coding_agent, "_request_agent", fake_request)
+    result = await coding_agent.solve_issue(
+        FakeWorkspace(), "owner/repo", 10, "Implement feature", "Requirements"
+    )
+
+    assert {"list_files", "search"}.issubset(tool_sets[0])
+    assert "list_files" not in tool_sets[4]
+    assert "search" not in tool_sets[4]
+    assert {"read_file", "read_files"}.issubset(tool_sets[4])
+    assert tool_sets[6] == {"write_file", "replace_text", "inspect_diff", "finish"}
+    assert result["summary"] == "implemented"
+
+
+@pytest.mark.asyncio
 async def test_repair_mode_preloads_changed_files_and_ci_details(monkeypatch):
     monkeypatch.setenv("SOLVER_REPAIR_MAX_TURNS", "4")
     requests = []

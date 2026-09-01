@@ -164,6 +164,9 @@ REPAIR_TOOLS = _tools_named(
     "read_files", "read_file", "search", "write_file", "replace_text",
     "inspect_diff", "finish",
 )
+IMPLEMENT_TARGETED_TOOLS = _tools_named(
+    "read_files", "read_file", "write_file", "replace_text", "inspect_diff", "finish",
+)
 REPAIR_EDIT_TOOLS = _tools_named("write_file", "replace_text", "inspect_diff", "finish")
 
 
@@ -263,12 +266,23 @@ cast is proven safe by the compiler's inferred type.
     edit_seen = False
 
     exploration_deadline = min(2, max_turns) if repair_mode else max(4, min(10, max_turns // 3))
+    forced_edit_turn = max(
+        exploration_deadline,
+        min(max_turns - 2, exploration_deadline + 3),
+    )
 
     for turn_index in range(max_turns):
         _compact_tool_history(messages)
         available_tools = REPAIR_TOOLS if repair_mode else TOOLS
         if repair_mode and turn_index >= exploration_deadline and not edit_seen:
             available_tools = REPAIR_EDIT_TOOLS
+        elif not repair_mode and not edit_seen:
+            if turn_index >= forced_edit_turn:
+                available_tools = REPAIR_EDIT_TOOLS
+            elif turn_index >= exploration_deadline:
+                # Discovery is finished. Permit only targeted reads of paths
+                # already found, preventing repeated tree listings/searches.
+                available_tools = IMPLEMENT_TARGETED_TOOLS
         message = await _request_agent(
             messages,
             tools=available_tools,
@@ -292,9 +306,17 @@ cast is proven safe by the compiler's inferred type.
             edit_seen,
         )
         if not tool_calls:
+            if not edit_seen and turn_index >= forced_edit_turn:
+                instruction = (
+                    "Do not provide more analysis. Call replace_text or write_file now to "
+                    "implement the smallest complete solution using the repository context "
+                    "already gathered."
+                )
+            else:
+                instruction = "Continue using repository tools. Call finish only when complete."
             messages.append({
                 "role": "user",
-                "content": "Continue using repository tools. Call finish only when complete.",
+                "content": instruction,
             })
             continue
 
@@ -373,12 +395,29 @@ cast is proven safe by the compiler's inferred type.
 
         turns_left = max_turns - turn_index - 1
         if turn_index + 1 == exploration_deadline and not edit_seen:
+            if repair_mode:
+                instruction = (
+                    f"The {exploration_deadline}-turn repair investigation budget is exhausted "
+                    "and no edit has succeeded. Make the smallest targeted correction now using "
+                    "the preloaded changed files and CI diagnostics."
+                )
+            else:
+                instruction = (
+                    f"The {exploration_deadline}-turn repository discovery budget is exhausted. "
+                    "Stop broad listing and searching. Use only targeted reads of files already "
+                    "identified, decide the smallest implementation, and begin editing."
+                )
+            messages.append({
+                "role": "user",
+                "content": instruction,
+            })
+        elif turn_index + 1 == forced_edit_turn and not edit_seen:
             messages.append({
                 "role": "user",
                 "content": (
-                    f"The {exploration_deadline}-turn exploration budget is exhausted and no "
-                    "edit has succeeded. Stop exploring and make the smallest correct edit "
-                    "now using the preloaded changed files and CI diagnostics."
+                    "Targeted investigation is now complete. On the next turn you must call "
+                    "replace_text or write_file and implement a concrete solution. No additional "
+                    "read, search, or listing tools are available until an edit succeeds."
                 ),
             })
         elif turns_left == 5:

@@ -264,6 +264,7 @@
       const canMarkReady = Boolean(job.pr_url) && job.status !== "DONE";
       const canRecheck = Boolean(job.pr_url) && !activeStatuses.has(job.status);
       const canRetryNow = retryableStatuses.has(job.status);
+      const canRetrySolve = !job.pr_url && ["FAILED", "NEEDS_REVIEW"].includes(job.status);
       const readyBtn = canMarkReady
         ? `<button class="btn btn-ready" data-ready="${esc(job.repo)}|${job.number}">Enable Ready for PR</button>` : "";
       const recheckBtn = canRecheck
@@ -272,6 +273,8 @@
         ? `<button class="btn" data-retry-now="${esc(job.repo)}|${job.number}" title="Detach this queued job from Telegram and force it onto the active site account">Force on site</button>` : "";
       const nextAttempt = canRetryNow && job.next_attempt_at
         ? `<span class="retry-time">Next attempt: ${esc(formatUtcDateTime(job.next_attempt_at))}</span>` : "";
+      const retrySolveBtn = canRetrySolve
+        ? `<button class="btn btn-primary" data-fix="${esc(job.repo)}|${job.number}|${esc(job.title)}|${esc(job.issue_url)}">Retry solve</button>` : "";
       return `
       <tr>
         <td><a class="issue-link" href="${esc(safeHref(job.issue_url))}" target="_blank" rel="noopener">${esc(job.title)}</a><span class="issue-number">#${esc(job.number)}</span></td>
@@ -279,7 +282,7 @@
         <td>${statusBadge(job.status)}</td>
         <td>${job.pr_url ? `<a class="pr-link" href="${esc(safeHref(job.pr_url))}" target="_blank" rel="noopener">Open PR ↗</a>` : "—"}</td>
         <td>${esc((job.last_error || "").slice(0, 140))}${nextAttempt}</td>
-        <td class="row-actions">${retryNowBtn}${recheckBtn}${readyBtn}</td>
+        <td class="row-actions">${retrySolveBtn}${retryNowBtn}${recheckBtn}${readyBtn}</td>
       </tr>`;
     }).join("");
 
