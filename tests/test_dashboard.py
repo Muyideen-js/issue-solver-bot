@@ -710,6 +710,55 @@ def test_fix_issue_enqueues_job(monkeypatch):
     assert jobs[0]["status"] == "QUEUED"
 
 
+def test_retry_now_releases_a_delayed_queued_job(monkeypatch):
+    admin = _login_admin(monkeypatch)
+    account = asyncio.run(_add_dashboard_account(admin.id))
+    job = asyncio.run(_add_job(
+        account.telegram_id,
+        "o/r",
+        18,
+        status="QUEUED",
+        attempts=2,
+        next_attempt_at=datetime.utcnow() + timedelta(hours=1),
+        last_error="Temporary provider rate limit",
+    ))
+
+    before = datetime.utcnow()
+    response = client.post(
+        f"/api/accounts/{account.id}/issues/retry-now",
+        json={"repo": "o/r", "number": 18},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"queued": True, "status": "QUEUED"}
+
+    async def read_job():
+        async with AsyncSessionLocal() as db:
+            return await db.get(IssueJob, job.id)
+
+    refreshed = asyncio.run(read_job())
+    assert refreshed.attempts == 0
+    assert before <= refreshed.next_attempt_at <= datetime.utcnow()
+    assert refreshed.last_error == "Manual Retry now requested from the dashboard"
+
+    listed = client.get(f"/api/accounts/{account.id}/jobs").json()
+    assert listed[0]["next_attempt_at"] is not None
+
+
+def test_retry_now_rejects_a_processing_job(monkeypatch):
+    admin = _login_admin(monkeypatch)
+    account = asyncio.run(_add_dashboard_account(admin.id))
+    asyncio.run(_add_job(account.telegram_id, "o/r", 19, status="PROCESSING"))
+
+    response = client.post(
+        f"/api/accounts/{account.id}/issues/retry-now",
+        json={"repo": "o/r", "number": 19},
+    )
+
+    assert response.status_code == 409
+    assert "already processing" in response.json()["detail"]
+
+
 def test_mark_ready_marks_a_draft_pr_ready_and_completes_the_job(monkeypatch):
     admin = _login_admin(monkeypatch)
     account = asyncio.run(_add_dashboard_account(admin.id))

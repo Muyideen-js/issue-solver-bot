@@ -35,6 +35,13 @@
     return typeof url === "string" && url.startsWith("https://") ? url : "#";
   }
 
+  function formatUtcDateTime(value) {
+    if (!value) return "";
+    const normalized = /(?:Z|[+-]\d\d:\d\d)$/.test(value) ? value : `${value}Z`;
+    const parsed = new Date(normalized);
+    return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
+  }
+
   /**
    * Run an async action while the button shows a spinner, so a slow request
    * never leaves the button looking stagnant. The button keeps its original
@@ -211,6 +218,7 @@
   function renderPanel() {
     const activeAccount = state.accounts.find((account) => account.id === state.activeAccountId);
     const activeStatuses = new Set(["QUEUED", "PROCESSING", "WAITING_CI"]);
+    const retryableStatuses = new Set(["QUEUED", "WAITING_CI"]);
     const attentionStatuses = new Set(["FAILED", "NEEDS_REVIEW", "NEEDS_API_KEY", "NEEDS_TESTS"]);
     const solvedCount = state.jobs.filter((job) => job.status === "DONE").length;
     const activeCount = state.jobs.filter((job) => activeStatuses.has(job.status)).length;
@@ -226,12 +234,15 @@
       const canUnskip = issue.status === "SKIPPED_BY_USER";
       const canMarkReady = Boolean(issue.pr_url) && issue.status !== "DONE";
       const canRecheck = Boolean(issue.pr_url) && !activeStatuses.has(issue.status);
+      const canRetryNow = retryableStatuses.has(issue.status);
       const prLink = issue.pr_url
         ? `<a class="pr-link" href="${esc(safeHref(issue.pr_url))}" target="_blank" rel="noopener">Open PR ↗</a>` : "";
       const readyBtn = canMarkReady
         ? `<button class="btn btn-ready" data-ready="${esc(issue.repo)}|${issue.number}">Enable Ready for PR</button>` : "";
       const recheckBtn = canRecheck
         ? `<button class="btn btn-recheck" data-recheck="${esc(issue.repo)}|${issue.number}" title="Check the current PR and repair it automatically if CI is failing">Recheck PR</button>` : "";
+      const retryNowBtn = canRetryNow
+        ? `<button class="btn" data-retry-now="${esc(issue.repo)}|${issue.number}" title="Move this delayed job to the front of the due queue">Retry now</button>` : "";
       return `
         <tr>
           <td><a class="issue-link" href="${esc(safeHref(issue.url))}" target="_blank" rel="noopener">${esc(issue.title)}</a><span class="issue-number">#${esc(issue.number)}</span></td>
@@ -240,6 +251,7 @@
           <td>${statusBadge(issue.status)} ${prLink}</td>
           <td class="row-actions">
             ${canFix ? `<button class="btn btn-primary" data-fix="${esc(issue.repo)}|${issue.number}|${esc(issue.title)}|${esc(issue.url)}">Fix</button>` : ""}
+            ${retryNowBtn}
             ${recheckBtn}
             ${readyBtn}
             ${canSkip ? `<button class="btn" data-skip="${esc(issue.repo)}|${issue.number}|${esc(issue.title)}|${esc(issue.url)}">Skip</button>` : ""}
@@ -251,18 +263,23 @@
     const jobRows = state.jobs.map((job) => {
       const canMarkReady = Boolean(job.pr_url) && job.status !== "DONE";
       const canRecheck = Boolean(job.pr_url) && !activeStatuses.has(job.status);
+      const canRetryNow = retryableStatuses.has(job.status);
       const readyBtn = canMarkReady
         ? `<button class="btn btn-ready" data-ready="${esc(job.repo)}|${job.number}">Enable Ready for PR</button>` : "";
       const recheckBtn = canRecheck
         ? `<button class="btn btn-recheck" data-recheck="${esc(job.repo)}|${job.number}" title="Check the current PR and repair it automatically if CI is failing">Recheck PR</button>` : "";
+      const retryNowBtn = canRetryNow
+        ? `<button class="btn" data-retry-now="${esc(job.repo)}|${job.number}" title="Move this delayed job to the front of the due queue">Retry now</button>` : "";
+      const nextAttempt = canRetryNow && job.next_attempt_at
+        ? `<span class="retry-time">Next attempt: ${esc(formatUtcDateTime(job.next_attempt_at))}</span>` : "";
       return `
       <tr>
         <td><a class="issue-link" href="${esc(safeHref(job.issue_url))}" target="_blank" rel="noopener">${esc(job.title)}</a><span class="issue-number">#${esc(job.number)}</span></td>
         <td><span class="repo-name">${esc(job.repo)}</span></td>
         <td>${statusBadge(job.status)}</td>
         <td>${job.pr_url ? `<a class="pr-link" href="${esc(safeHref(job.pr_url))}" target="_blank" rel="noopener">Open PR ↗</a>` : "—"}</td>
-        <td>${esc((job.last_error || "").slice(0, 140))}</td>
-        <td class="row-actions">${recheckBtn}${readyBtn}</td>
+        <td>${esc((job.last_error || "").slice(0, 140))}${nextAttempt}</td>
+        <td class="row-actions">${retryNowBtn}${recheckBtn}${readyBtn}</td>
       </tr>`;
     }).join("");
 
@@ -319,6 +336,9 @@
     });
     panelEl.querySelectorAll("[data-recheck]").forEach((btn) => {
       btn.addEventListener("click", () => onRecheck(btn.dataset.recheck, btn));
+    });
+    panelEl.querySelectorAll("[data-retry-now]").forEach((btn) => {
+      btn.addEventListener("click", () => onRetryNow(btn.dataset.retryNow, btn));
     });
   }
 
@@ -511,6 +531,22 @@
       aiErrorEl.textContent = err.message;
       aiErrorEl.classList.remove("hidden");
     }
+  }
+
+  async function onRetryNow(raw, btn) {
+    const [repo, number] = raw.split("|");
+    await withBusy(btn, "Retrying", async () => {
+      try {
+        await api(`/api/accounts/${state.activeAccountId}/issues/retry-now`, {
+          method: "POST",
+          body: JSON.stringify({ repo, number: Number(number) }),
+        });
+        delete state.cache[state.activeAccountId];
+        await refreshPanel();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
   }
 
   async function testAIConnection() {

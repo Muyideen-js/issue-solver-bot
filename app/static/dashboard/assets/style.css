@@ -229,6 +229,7 @@ a { color: var(--blue-dark); text-decoration: none; }
 a:hover { color: var(--blue); text-decoration: underline; }
 .issue-link { display: inline; color: var(--text); font-weight: 680; line-height: 1.45; }
 .issue-number { display: block; margin-top: 0.18rem; color: var(--muted); font-family: var(--font-mono); font-size: 0.68rem; }
+.retry-time { display: block; margin-top: 0.3rem; color: var(--muted); font-family: var(--font-mono); font-size: 0.68rem; }
 .repo-name { color: #42526b; font-family: var(--font-mono); font-size: 0.72rem; }
 .pr-link { display: inline-block; margin-top: 0.25rem; font-size: 0.7rem; font-weight: 700; white-space: nowrap; }
 

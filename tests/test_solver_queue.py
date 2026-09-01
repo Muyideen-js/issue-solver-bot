@@ -1,3 +1,6 @@
+import asyncio
+from datetime import datetime, timedelta
+
 import pytest
 from sqlalchemy import select
 
@@ -136,6 +139,68 @@ def test_compiler_named_file_is_preloaded_first():
     paths = ["apps/web/src/other.ts", "apps/web/src/components/OffRampSelector.test.tsx"]
     details = "src/components/OffRampSelector.test.tsx(84,22): error TS2352"
     assert _prioritize_failure_paths(paths, details)[0].endswith("OffRampSelector.test.tsx")
+
+
+@pytest.mark.asyncio
+async def test_claim_next_job_uses_oldest_due_time_instead_of_draft_priority():
+    now = datetime.utcnow()
+    async with AsyncSessionLocal() as db:
+        oldest = IssueJob(
+            telegram_id="dashboard:oldest",
+            repo_full_name="o/r",
+            issue_number=20,
+            issue_title="Old queued issue",
+            issue_url="https://github.com/o/r/issues/20",
+            status="QUEUED",
+            next_attempt_at=now - timedelta(minutes=5),
+        )
+        newer_draft = IssueJob(
+            telegram_id="dashboard:newer",
+            repo_full_name="o/r",
+            issue_number=21,
+            issue_title="Newer CI poll",
+            issue_url="https://github.com/o/r/issues/21",
+            status="WAITING_CI",
+            draft_pr_number=31,
+            next_attempt_at=now - timedelta(minutes=1),
+        )
+        db.add_all([oldest, newer_draft])
+        await db.commit()
+        await db.refresh(oldest)
+        oldest_id = oldest.id
+
+    claimed_id = await solver_queue._claim_next_job()
+
+    assert claimed_id == oldest_id
+
+
+@pytest.mark.asyncio
+async def test_solver_lane_recovers_an_unexpected_job_error_and_continues(monkeypatch):
+    stop_event = asyncio.Event()
+    claimed = iter([10, 11])
+    processed = []
+    released = []
+
+    async def fake_claim():
+        return next(claimed)
+
+    async def fake_process(job_id):
+        processed.append(job_id)
+        if job_id == 10:
+            raise RuntimeError("unexpected decrypt failure")
+        stop_event.set()
+
+    async def fake_release(job_id, error):
+        released.append((job_id, error))
+
+    monkeypatch.setattr(solver_queue, "_claim_next_job", fake_claim)
+    monkeypatch.setattr(solver_queue, "_process_job", fake_process)
+    monkeypatch.setattr(solver_queue, "_release_claimed_job", fake_release)
+
+    await solver_queue._solver_lane(stop_event)
+
+    assert processed == [10, 11]
+    assert released == [(10, "unexpected decrypt failure")]
 
 
 @pytest.mark.asyncio

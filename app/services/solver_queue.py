@@ -7,7 +7,7 @@ import os
 import re
 from datetime import datetime, timedelta
 
-from sqlalchemy import case, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.models.database import (
@@ -217,7 +217,13 @@ async def _solver_lane(stop_event: asyncio.Event) -> None:
             except asyncio.TimeoutError:
                 pass
             continue
-        await _process_job(job_id)
+        try:
+            await _process_job(job_id)
+        except Exception as exc:
+            # A failure before _process_job reaches its normal retry handler
+            # must not kill this lane and leave the claimed job PROCESSING.
+            logger.exception("Solver lane crashed while processing job %s", job_id)
+            await _release_claimed_job(job_id, str(exc))
 
 
 async def _claim_next_job() -> int | None:
@@ -229,8 +235,8 @@ async def _claim_next_job() -> int | None:
                 IssueJob.next_attempt_at <= datetime.utcnow(),
             )
             .order_by(
-                case((IssueJob.draft_pr_number.is_not(None), 0), else_=1),
                 IssueJob.next_attempt_at,
+                IssueJob.created_at,
                 IssueJob.id,
             )
             .limit(1)
@@ -242,6 +248,18 @@ async def _claim_next_job() -> int | None:
         job.status = "PROCESSING"
         await db.commit()
         return job.id
+
+
+async def _release_claimed_job(job_id: int, error: str) -> None:
+    """Return an unexpectedly abandoned claim to the queue without killing its lane."""
+    async with AsyncSessionLocal() as db:
+        job = await db.get(IssueJob, job_id)
+        if not job or job.status != "PROCESSING":
+            return
+        job.status = "WAITING_CI" if job.draft_pr_number else "QUEUED"
+        job.next_attempt_at = datetime.utcnow() + timedelta(seconds=30)
+        job.last_error = f"Worker recovered after an unexpected error: {error}"[:2000]
+        await db.commit()
 
 
 async def _process_job(job_id: int) -> None:

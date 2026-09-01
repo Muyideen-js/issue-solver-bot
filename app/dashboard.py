@@ -332,6 +332,9 @@ def _job_summary(job: IssueJob) -> dict:
         "status": _display_status(job),
         "pr_url": _job_pr_url(job),
         "last_error": job.last_error,
+        "next_attempt_at": (
+            job.next_attempt_at.isoformat() if job.next_attempt_at else None
+        ),
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
     }
 
@@ -778,6 +781,42 @@ async def fix_issue(
         )
     queued = await enqueue_issue(account, issue)
     return {"queued": queued}
+
+
+@router.post("/api/accounts/{account_id}/issues/retry-now")
+async def retry_issue_now(
+    account_id: int, payload: IssueRef, scope_user: PortalUser = Depends(current_scope_user)
+):
+    """Move a delayed queued job to the front of the due queue immediately."""
+    _validate_repo(payload.repo)
+    async with AsyncSessionLocal() as db:
+        account = await _get_dashboard_account(db, account_id, scope_user)
+        sibling_ids = await telegram_ids_sharing_username(db, account.github_username)
+        result = await db.execute(
+            select(IssueJob).where(
+                IssueJob.telegram_id.in_(sibling_ids),
+                IssueJob.repo_full_name == payload.repo,
+                IssueJob.issue_number == payload.number,
+            )
+        )
+        shared_jobs = _coalesce_jobs(list(result.scalars()))
+        job = shared_jobs[0] if shared_jobs else None
+        if not job:
+            raise HTTPException(status_code=404, detail="Solver job not found")
+        if job.status == "PROCESSING":
+            raise HTTPException(status_code=409, detail="This issue is already processing")
+        if job.status not in {"QUEUED", "WAITING_CI"}:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Retry now is only available for queued jobs, not {job.status}",
+            )
+
+        job.next_attempt_at = datetime.utcnow()
+        job.attempts = 0
+        job.last_error = "Manual Retry now requested from the dashboard"
+        await db.commit()
+        status = job.status
+    return {"queued": True, "status": status}
 
 
 @router.post("/api/accounts/{account_id}/issues/mark-ready")
