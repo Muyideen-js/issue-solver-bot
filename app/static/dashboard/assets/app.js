@@ -242,7 +242,7 @@
       const recheckBtn = canRecheck
         ? `<button class="btn btn-recheck" data-recheck="${esc(issue.repo)}|${issue.number}" title="Check the current PR and repair it automatically if CI is failing">Recheck PR</button>` : "";
       const retryNowBtn = canRetryNow
-        ? `<button class="btn" data-retry-now="${esc(issue.repo)}|${issue.number}" title="Move this delayed job to the front of the due queue">Retry now</button>` : "";
+        ? `<button class="btn" data-retry-now="${esc(issue.repo)}|${issue.number}" title="Detach this queued job from Telegram and force it onto the active site account">Force on site</button>` : "";
       return `
         <tr>
           <td><a class="issue-link" href="${esc(safeHref(issue.url))}" target="_blank" rel="noopener">${esc(issue.title)}</a><span class="issue-number">#${esc(issue.number)}</span></td>
@@ -269,7 +269,7 @@
       const recheckBtn = canRecheck
         ? `<button class="btn btn-recheck" data-recheck="${esc(job.repo)}|${job.number}" title="Check the current PR and repair it automatically if CI is failing">Recheck PR</button>` : "";
       const retryNowBtn = canRetryNow
-        ? `<button class="btn" data-retry-now="${esc(job.repo)}|${job.number}" title="Move this delayed job to the front of the due queue">Retry now</button>` : "";
+        ? `<button class="btn" data-retry-now="${esc(job.repo)}|${job.number}" title="Detach this queued job from Telegram and force it onto the active site account">Force on site</button>` : "";
       const nextAttempt = canRetryNow && job.next_attempt_at
         ? `<span class="retry-time">Next attempt: ${esc(formatUtcDateTime(job.next_attempt_at))}</span>` : "";
       return `
@@ -535,7 +535,7 @@
 
   async function onRetryNow(raw, btn) {
     const [repo, number] = raw.split("|");
-    await withBusy(btn, "Retrying", async () => {
+    await withBusy(btn, "Forcing", async () => {
       try {
         await api(`/api/accounts/${state.activeAccountId}/issues/retry-now`, {
           method: "POST",

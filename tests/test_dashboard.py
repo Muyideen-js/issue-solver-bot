@@ -769,7 +769,7 @@ def test_retry_now_releases_a_delayed_queued_job(monkeypatch):
     assert refreshed.attempts == 0
     assert before <= refreshed.next_attempt_at <= datetime.utcnow()
     assert refreshed.last_error == (
-        "Dashboard Retry now requested; moved to the active site account"
+        "Dashboard Force on site requested; detached from Telegram ownership"
     )
 
     async def read_account():
@@ -777,6 +777,62 @@ def test_retry_now_releases_a_delayed_queued_job(monkeypatch):
             return await db.get(SolverUser, account.id)
 
     assert asyncio.run(read_account()).paused is False
+
+
+def test_force_on_site_consolidates_a_telegram_duplicate(monkeypatch):
+    admin = _login_admin(monkeypatch)
+    account = asyncio.run(_add_dashboard_account(admin.id, username="duplicate-user"))
+
+    async def seed_duplicates():
+        async with AsyncSessionLocal() as db:
+            db.add(SolverUser(
+                telegram_id="987654321",
+                github_username="duplicate-user",
+                github_token_encrypted=encrypt_token("telegram-token"),
+                paused=True,
+            ))
+            await db.commit()
+        dashboard_job = await _add_job(
+            account.telegram_id,
+            "o/r",
+            22,
+            status="FAILED",
+            attempts=3,
+            last_error="Old dashboard failure",
+        )
+        telegram_job = await _add_job(
+            "987654321",
+            "o/r",
+            22,
+            status="QUEUED",
+            last_error="New issue solving is paused",
+        )
+        return dashboard_job.id, telegram_job.id
+
+    dashboard_job_id, telegram_job_id = asyncio.run(seed_duplicates())
+    response = client.post(
+        f"/api/accounts/{account.id}/issues/retry-now",
+        json={"repo": "o/r", "number": 22},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"queued": True, "status": "QUEUED"}
+
+    async def read_jobs():
+        async with AsyncSessionLocal() as db:
+            return (
+                await db.get(IssueJob, dashboard_job_id),
+                await db.get(IssueJob, telegram_job_id),
+            )
+
+    dashboard_job, telegram_job = asyncio.run(read_jobs())
+    assert dashboard_job.status == "QUEUED"
+    assert dashboard_job.attempts == 0
+    assert dashboard_job.last_error == (
+        "Dashboard Force on site requested; detached from Telegram ownership"
+    )
+    assert telegram_job.status == "SKIPPED_BY_USER"
+    assert "Superseded" in telegram_job.last_error
 
     listed = client.get(f"/api/accounts/{account.id}/jobs").json()
     assert listed[0]["next_attempt_at"] is not None

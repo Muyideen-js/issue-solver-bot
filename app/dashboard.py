@@ -194,7 +194,7 @@ async def _adopt_retryable_job(
     issue_number: int,
     reason: str,
 ) -> tuple[IssueJob | None, list[IssueJob]]:
-    """Move an old Telegram-owned queued job onto the active dashboard account."""
+    """Consolidate sibling jobs into one active job owned by the dashboard account."""
     account.paused = False
     sibling_ids = await telegram_ids_sharing_username(db, account.github_username)
     result = await db.execute(
@@ -209,20 +209,46 @@ async def _adopt_retryable_job(
     if not retryable:
         return None, jobs
 
-    # Prefer the job already owned by this dashboard account. Otherwise adopt
-    # the old Telegram job, so its paused flag and legacy provider no longer
-    # control an explicit action made on the site.
-    job = next(
-        (item for item in retryable if item.telegram_id == account.telegram_id),
-        retryable[0],
+    source = retryable[0]
+    dashboard_job = next(
+        (item for item in jobs if item.telegram_id == account.telegram_id),
+        None,
     )
-    if job.telegram_id != account.telegram_id:
-        if any(item.telegram_id == account.telegram_id for item in jobs):
-            return None, jobs
+    if dashboard_job and dashboard_job.status == "DONE":
+        return None, jobs
+
+    # A dashboard row may already exist in FAILED/NEEDS_* while an older
+    # Telegram duplicate is still QUEUED. Reuse that dashboard row instead of
+    # refusing the adoption, and carry across any PR state owned by the source.
+    job = dashboard_job or source
+    if dashboard_job and source is not dashboard_job:
+        for field in (
+            "branch_name",
+            "draft_pr_number",
+            "draft_pr_url",
+            "head_sha",
+            "result_summary",
+        ):
+            if not getattr(job, field) and getattr(source, field):
+                setattr(job, field, getattr(source, field))
+    elif job.telegram_id != account.telegram_id:
         job.telegram_id = account.telegram_id
 
+    for duplicate in jobs:
+        if duplicate is job or duplicate.status not in {"QUEUED", "WAITING_CI"}:
+            continue
+        duplicate.status = "SKIPPED_BY_USER"
+        duplicate.last_error = (
+            "Superseded by a job forced onto the active dashboard account"
+        )
+
+    job.status = "WAITING_CI" if job.draft_pr_number else "QUEUED"
     job.next_attempt_at = datetime.utcnow()
     job.attempts = 0
+    job.repair_attempts = 0
+    job.ci_polls = 0
+    if job.draft_pr_number:
+        job.head_sha = None
     job.last_error = reason
     return job, jobs
 
@@ -830,7 +856,7 @@ async def fix_issue(
                 fresh_account,
                 payload.repo,
                 payload.number,
-                "Dashboard Fix requested; moved to the active site account",
+                "Dashboard Fix requested; forced onto the active site account",
             )
             await db.commit()
             queued = adopted is not None
@@ -841,7 +867,7 @@ async def fix_issue(
 async def retry_issue_now(
     account_id: int, payload: IssueRef, scope_user: PortalUser = Depends(current_scope_user)
 ):
-    """Move a delayed queued job to the front of the due queue immediately."""
+    """Force a queued sibling job onto the active dashboard account immediately."""
     _validate_repo(payload.repo)
     async with AsyncSessionLocal() as db:
         account = await _get_dashboard_account(db, account_id, scope_user)
@@ -850,7 +876,7 @@ async def retry_issue_now(
             account,
             payload.repo,
             payload.number,
-            "Dashboard Retry now requested; moved to the active site account",
+            "Dashboard Force on site requested; detached from Telegram ownership",
         )
         if not job:
             shared_jobs = _coalesce_jobs(jobs)
