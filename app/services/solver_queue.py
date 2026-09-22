@@ -170,26 +170,38 @@ async def retry_draft_pr(telegram_id: str, pr_number: int) -> str:
         )
 
 
+async def run_discovery_once() -> int:
+    """Run one discovery pass for every auto-solve user and report jobs queued.
+
+    Split out of assignment_poller so a scheduled one-shot run can do a single
+    pass and exit instead of holding a process (and a database connection) open.
+    """
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(SolverUser).where(
+                SolverUser.auto_solve.is_(True), SolverUser.paused.is_(False)
+            )
+        )
+        users = result.scalars().all()
+    total_queued = 0
+    for user in users:
+        try:
+            discovered, queued = await discover_for_user(user)
+            total_queued += queued
+            if queued:
+                await notify(
+                    user.telegram_id,
+                    f"Found {discovered} assigned issue(s); queued {queued} new job(s).",
+                )
+        except Exception:
+            logger.exception("Assignment discovery failed for %s", user.github_username)
+    return total_queued
+
+
 async def assignment_poller(stop_event: asyncio.Event) -> None:
     interval = max(60, int(os.getenv("ASSIGNMENT_POLL_SECONDS", "300")))
     while not stop_event.is_set():
-        async with AsyncSessionLocal() as db:
-            result = await db.execute(
-                select(SolverUser).where(
-                    SolverUser.auto_solve.is_(True), SolverUser.paused.is_(False)
-                )
-            )
-            users = result.scalars().all()
-        for user in users:
-            try:
-                discovered, queued = await discover_for_user(user)
-                if queued:
-                    await notify(
-                        user.telegram_id,
-                        f"Found {discovered} assigned issue(s); queued {queued} new job(s).",
-                    )
-            except Exception:
-                logger.exception("Assignment discovery failed for %s", user.github_username)
+        await run_discovery_once()
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=interval)
         except asyncio.TimeoutError:
@@ -224,6 +236,43 @@ async def _solver_lane(stop_event: asyncio.Event) -> None:
             # must not kill this lane and leave the claimed job PROCESSING.
             logger.exception("Solver lane crashed while processing job %s", job_id)
             await _release_claimed_job(job_id, str(exc))
+
+
+async def drain_queue(stop_event: asyncio.Event) -> int:
+    """Process queued jobs until the queue empties, then return.
+
+    solver_worker's lanes idle forever waiting for new work, which is what keeps
+    an always-on host awake. A drain lane exits the moment the queue is empty,
+    so a scheduled run finishes and lets both the runner and the database sleep.
+    """
+    await _recover_interrupted_jobs()
+    concurrency = max(1, int(os.getenv("SOLVER_CONCURRENCY", "3")))
+    lanes = [asyncio.create_task(_drain_lane(stop_event)) for _ in range(concurrency)]
+    counts = await asyncio.gather(*lanes, return_exceptions=True)
+    processed = 0
+    for count in counts:
+        if isinstance(count, BaseException):
+            logger.exception("Drain lane failed", exc_info=count)
+            continue
+        processed += count
+    return processed
+
+
+async def _drain_lane(stop_event: asyncio.Event) -> int:
+    processed = 0
+    while not stop_event.is_set():
+        job_id = await _claim_next_job()
+        if job_id is None:
+            return processed
+        try:
+            await _process_job(job_id)
+        except Exception as exc:
+            # Mirror _solver_lane: a crash before _process_job's own retry
+            # handler must not leave the claimed job stuck in PROCESSING.
+            logger.exception("Drain lane crashed while processing job %s", job_id)
+            await _release_claimed_job(job_id, str(exc))
+        processed += 1
+    return processed
 
 
 async def _claim_next_job() -> int | None:

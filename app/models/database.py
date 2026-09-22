@@ -1,6 +1,7 @@
 """Durable SQLAlchemy models for users and issue-solving jobs."""
 import os
 from datetime import datetime
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text, UniqueConstraint, func, inspect, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -10,13 +11,33 @@ from sqlalchemy.pool import StaticPool
 from app.services.password import hash_password
 
 
+# libpq spells these in the URL; asyncpg takes ssl= as a connect argument and
+# raises TypeError on anything else, so they are stripped and translated below.
+_LIBPQ_ONLY_PARAMS = ("sslmode", "channel_binding")
+
+
 def _database_url() -> str:
     url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./solver.db")
     if url.startswith("postgres://"):
-        return url.replace("postgres://", "postgresql+asyncpg://", 1)
-    if url.startswith("postgresql://"):
-        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
-    return url
+        url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+    elif url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    if "asyncpg" not in url:
+        return url
+    split = urlsplit(url)
+    kept = [
+        (key, value)
+        for key, value in parse_qsl(split.query, keep_blank_values=True)
+        if key not in _LIBPQ_ONLY_PARAMS
+    ]
+    return urlunsplit(split._replace(query=urlencode(kept)))
+
+
+def _requires_ssl() -> bool:
+    """True when the raw URL asked libpq for TLS, as hosted Postgres URLs do."""
+    raw = os.getenv("DATABASE_URL", "")
+    mode = dict(parse_qsl(urlsplit(raw).query)).get("sslmode", "")
+    return mode not in ("", "disable", "allow")
 
 
 def _engine_kwargs(url: str) -> dict:
@@ -24,10 +45,13 @@ def _engine_kwargs(url: str) -> dict:
     # every session on the same connection so data doesn't vanish between them.
     if ":memory:" in url:
         return {"poolclass": StaticPool, "connect_args": {"check_same_thread": False}}
+    if "asyncpg" in url and _requires_ssl():
+        return {"connect_args": {"ssl": True}}
     return {}
 
 
-engine = create_async_engine(_database_url(), echo=False, **_engine_kwargs(_database_url()))
+_url = _database_url()
+engine = create_async_engine(_url, echo=False, **_engine_kwargs(_url))
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 Base = declarative_base()
 

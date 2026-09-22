@@ -5,3 +5,17 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
+    envVars:
+      # The poller and solver run on a schedule (.github/workflows/solver.yml).
+      # Keeping them here holds the process awake 24/7, which is what exhausts
+      # the free instance-hour allowance.
+      - key: RUN_BACKGROUND_WORKERS
+        value: "false"
+      # Long polling cannot survive spin-down; Telegram's webhook POST is the
+      # inbound request that wakes an idle free instance.
+      - key: TELEGRAM_MODE
+        value: webhook
+      - key: TELEGRAM_WEBHOOK_BASE
+        sync: false
+      - key: TELEGRAM_WEBHOOK_SECRET
+        generateValue: true

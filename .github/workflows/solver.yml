@@ -1,0 +1,78 @@
+name: Solver cycle
+
+# Replaces the always-on poller/worker. A scheduled run does one discovery +
+# drain pass and exits, so no host is billed for idle uptime and the database
+# is only awake while work is happening.
+on:
+  schedule:
+    # Every 15 minutes. GitHub delays scheduled runs under load, so treat this
+    # as "usually 15 minutes, sometimes longer" rather than a guarantee.
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+# A cycle claims jobs with skip_locked, so overlapping runs are safe, but
+# serialising them keeps database usage predictable on a metered free tier.
+concurrency:
+  group: solver-cycle
+  cancel-in-progress: false
+
+jobs:
+  solve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Run one solver cycle
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TELEGRAM_SOLVER_BOT_TOKEN: ${{ secrets.TELEGRAM_SOLVER_BOT_TOKEN }}
+          TELEGRAM_OWNER_ID: ${{ secrets.TELEGRAM_OWNER_ID }}
+          ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+          AI_PROVIDER: ${{ vars.AI_PROVIDER || 'deepseek' }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_MODEL: ${{ vars.DEEPSEEK_MODEL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          PROGRAM_LABELS: ${{ vars.PROGRAM_LABELS }}
+          SOLVER_MAX_TURNS: ${{ vars.SOLVER_MAX_TURNS }}
+          SOLVER_REPAIR_MAX_TURNS: ${{ vars.SOLVER_REPAIR_MAX_TURNS }}
+          SOLVER_MAX_REPAIR_ATTEMPTS: ${{ vars.SOLVER_MAX_REPAIR_ATTEMPTS }}
+          SOLVER_CONCURRENCY: ${{ vars.SOLVER_CONCURRENCY || '3' }}
+          # Leave the job a few minutes to wind down before timeout-minutes
+          # kills it mid-push.
+          CYCLE_MAX_SECONDS: "2700"
+        run: python -m scripts.run_cycle
+
+  keepalive:
+    # GitHub silently disables schedules on a public repo after 60 days with no
+    # repository activity. A monthly commit keeps this workflow alive.
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Refresh keepalive stamp on the first of the month
+        run: |
+          if [ "$(date -u +%d)" != "01" ]; then
+            echo "Not the first of the month; nothing to do."
+            exit 0
+          fi
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > .github/keepalive
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/keepalive
+          git diff --cached --quiet && exit 0
+          git commit -m "chore: keepalive stamp"
+          git push

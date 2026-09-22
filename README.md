@@ -178,9 +178,12 @@ python -m pytest -q
 uvicorn app.main:app --reload --port 8010
 ```
 
-## Render
+## Deployment
 
-Create a separate Render web service and PostgreSQL database for this project.
+The bot can run two ways. Both share one database, so they can be mixed.
+
+### Always-on (one process does everything)
+
 Set the environment values above, use `pip install -r requirements.txt` as the
 build command, and use the included `Procfile` start command. Run exactly one
 instance because Telegram long polling and the durable worker are single-instance.
@@ -190,3 +193,39 @@ one instance instead of scaling instances — `_claim_next_job` locks rows with
 can cover it.
 The root URL supports both `GET` and lightweight `HEAD` requests so free uptime
 monitors can check the service without downloading a response body.
+
+This is the simplest setup but it is awake 24/7, which exhausts any host that
+meters uptime (and any database that meters compute hours, because the poller
+queries often enough that it never auto-suspends).
+
+### Split: scheduled solver + sleeping web service
+
+Keeps the same hosts within their free allowances by letting the web service
+idle. The work moves to `.github/workflows/solver.yml`, which runs
+`python -m scripts.run_cycle` on a schedule: one discovery pass, drain the
+queue, exit.
+
+On the web service set:
+
+- `RUN_BACKGROUND_WORKERS=false` — the poller and solver run on the schedule
+  instead, so nothing holds the process awake.
+- `TELEGRAM_MODE=webhook` plus `TELEGRAM_WEBHOOK_BASE` (the public URL) and
+  `TELEGRAM_WEBHOOK_SECRET`. Long polling cannot survive spin-down; in webhook
+  mode Telegram's own `POST /telegram/webhook` is the inbound request that wakes
+  an idle instance. Expect a cold start on the first command after a quiet spell.
+
+`render.yaml` already sets these. In the repository's Actions settings add
+`DATABASE_URL`, `TELEGRAM_SOLVER_BOT_TOKEN`, `TELEGRAM_OWNER_ID`,
+`ENCRYPTION_KEY` and your provider key as **secrets**, and the non-secret tuning
+values (`PROGRAM_LABELS`, `SOLVER_*`, `AI_PROVIDER`) as **variables**.
+
+Two things to know:
+
+- `DATABASE_URL` must point at a real database. A scheduled run gets a fresh
+  filesystem, so SQLite would start empty every time and the bot would re-solve
+  issues it already has PRs for. `scripts/run_cycle.py` refuses to run against
+  SQLite unless `ALLOW_EPHEMERAL_DB=true`.
+- GitHub delays scheduled workflows under load, so a 15-minute cron means
+  "usually 15 minutes, sometimes longer". It also disables schedules after 60
+  days of repository inactivity; the workflow's `keepalive` job commits a stamp
+  on the first of each month to prevent that.

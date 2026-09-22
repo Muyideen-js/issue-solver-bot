@@ -384,3 +384,99 @@ async def test_enqueue_issue_recognizes_work_already_done_on_another_channel():
         jobs = result.scalars().all()
     assert len(jobs) == 1  # no duplicate job created under the dashboard channel
     assert jobs[0].telegram_id == telegram_user.telegram_id
+
+
+@pytest.mark.asyncio
+async def test_drain_lane_returns_when_the_queue_empties(monkeypatch):
+    """The scheduled runner must exit on an empty queue instead of idling."""
+    processed = []
+    claimed = iter([21, 22, None])
+
+    async def fake_claim():
+        return next(claimed)
+
+    async def fake_process(job_id):
+        processed.append(job_id)
+
+    monkeypatch.setattr(solver_queue, "_claim_next_job", fake_claim)
+    monkeypatch.setattr(solver_queue, "_process_job", fake_process)
+
+    count = await asyncio.wait_for(
+        solver_queue._drain_lane(asyncio.Event()), timeout=5
+    )
+
+    assert processed == [21, 22]
+    assert count == 2
+
+
+@pytest.mark.asyncio
+async def test_drain_lane_releases_a_job_that_crashes_outside_the_retry_handler(monkeypatch):
+    released = []
+    claimed = iter([30, None])
+
+    async def fake_claim():
+        return next(claimed)
+
+    async def fake_process(job_id):
+        raise RuntimeError("clone exploded")
+
+    async def fake_release(job_id, error):
+        released.append((job_id, error))
+
+    monkeypatch.setattr(solver_queue, "_claim_next_job", fake_claim)
+    monkeypatch.setattr(solver_queue, "_process_job", fake_process)
+    monkeypatch.setattr(solver_queue, "_release_claimed_job", fake_release)
+
+    count = await asyncio.wait_for(
+        solver_queue._drain_lane(asyncio.Event()), timeout=5
+    )
+
+    assert released == [(30, "clone exploded")]
+    assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_drain_lane_stops_claiming_once_the_budget_is_spent(monkeypatch):
+    """A tripped deadline must stop new claims, not abandon the current job."""
+    stop_event = asyncio.Event()
+    processed = []
+
+    async def fake_claim():
+        return 40
+
+    async def fake_process(job_id):
+        processed.append(job_id)
+        stop_event.set()
+
+    monkeypatch.setattr(solver_queue, "_claim_next_job", fake_claim)
+    monkeypatch.setattr(solver_queue, "_process_job", fake_process)
+
+    count = await asyncio.wait_for(solver_queue._drain_lane(stop_event), timeout=5)
+
+    assert processed == [40]
+    assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_discovery_once_reports_jobs_queued_without_looping(monkeypatch):
+    async def fake_search(token, username):
+        return [{
+            "id": 1, "number": 7, "title": "Assigned issue",
+            "html_url": "https://github.com/o/r/issues/7",
+            "repository_url": "https://api.github.com/repos/o/r",
+            "labels": [{"name": "GrantFox OSS"}],
+        }]
+
+    monkeypatch.setenv("PROGRAM_LABELS", "GrantFox OSS")
+    monkeypatch.setattr(solver_queue.gh, "search_assigned_program_issues", fake_search)
+    monkeypatch.setattr(solver_queue, "notify", lambda *a, **k: asyncio.sleep(0))
+
+    user = await _add_user("555")
+    async with AsyncSessionLocal() as db:
+        stored = await db.get(SolverUser, user.id)
+        stored.auto_solve = True
+        await db.commit()
+
+    queued = await asyncio.wait_for(solver_queue.run_discovery_once(), timeout=5)
+
+    assert queued == 1
