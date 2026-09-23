@@ -891,7 +891,9 @@ async def start_claude_session(
     repository = await _safe_github_call(gh.get_repository(token, payload.repo))
     base_branch = repository.get("default_branch") or "main"
     fork = await _safe_github_call(
-        gh.ensure_personal_fork(token, account.github_username, payload.repo)
+        gh.ensure_personal_fork(
+            token, account.github_username, payload.repo, repository["name"]
+        )
     )
     branch = claude_handoff.branch_name(payload.number)
     try:

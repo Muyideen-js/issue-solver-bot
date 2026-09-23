@@ -14,6 +14,7 @@ from app.models.database import (
     SolverUser,
     bootstrap_admin,
 )
+from app.services import claude_handoff
 from app.services import github as gh
 from app.services.crypto import decrypt_token, encrypt_token
 from app.services.password import hash_password
@@ -1056,3 +1057,65 @@ def test_add_list_delete_account_flow(monkeypatch):
 
     listed_again = client.get("/api/accounts")
     assert listed_again.json() == []
+
+
+def test_claude_session_endpoint_calls_github_with_the_real_signatures(monkeypatch, tmp_path):
+    """autospec enforces the real signatures.
+
+    A hand-rolled stub accepts any arguments, which is how a wrong arity in the
+    ensure_personal_fork call reached a live click as a 500.
+    """
+    from unittest.mock import patch
+
+    _login_admin(monkeypatch)
+    created = client.post(
+        "/api/admin/users",
+        json={"username": "claudeuser", "temporary_password": "temp-password-1"},
+    ).json()
+    account = asyncio.run(_add_dashboard_account(created["id"], "octocat"))
+    assert client.post(f"/api/admin/users/{created['id']}/view-as").status_code == 200
+    monkeypatch.setenv("CLAUDE_HANDOFF_ROOT", str(tmp_path))
+
+    issue = {
+        "number": 7, "title": "Needs a fix", "body": "broken",
+        "html_url": "https://github.com/o/r/issues/7",
+        "repository_url": "https://api.github.com/repos/o/r",
+        "state": "open", "assignees": [{"login": "octocat"}],
+    }
+    launched = {}
+
+    def fake_launch(cwd, prompt, env=None):
+        launched["env"] = env
+        launched["prompt"] = prompt
+        return ["wt", "-d", str(cwd)]
+
+    with patch.object(gh, "get_issue", autospec=True) as get_issue, \
+         patch.object(gh, "get_repository", autospec=True) as get_repository, \
+         patch.object(gh, "ensure_personal_fork", autospec=True) as ensure_fork, \
+         patch.object(claude_handoff, "prepare_checkout", autospec=True) as prepare, \
+         patch.object(claude_handoff, "launch_terminal", fake_launch):
+        get_issue.return_value = issue
+        get_repository.return_value = {
+            "default_branch": "main", "name": "r",
+            "clone_url": "https://github.com/o/r.git",
+        }
+        ensure_fork.return_value = {"clone_url": "https://github.com/octocat/r.git"}
+        prepare.return_value = tmp_path / "checkout"
+
+        response = client.post(
+            f"/api/accounts/{account.id}/issues/claude-session",
+            json={"repo": "o/r", "number": 7},
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["started"] is True
+    assert body["branch"] == "solver/issue-7"
+    assert body["base_branch"] == "main"
+    # The session must be authenticated as this account, not the machine's login.
+    assert launched["env"]["GH_TOKEN"]
+    assert "#7" in launched["prompt"]
+    # Parked so the automated solver cannot claim the same branch.
+    jobs = client.get(f"/api/accounts/{account.id}/jobs").json()
+    assert any(job["status"] == "IN_CLAUDE_CODE" for job in jobs)
+    client.post("/api/admin/exit-view-as")
