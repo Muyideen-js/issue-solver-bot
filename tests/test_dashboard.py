@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -1118,4 +1119,132 @@ def test_claude_session_endpoint_calls_github_with_the_real_signatures(monkeypat
     # Parked so the automated solver cannot claim the same branch.
     jobs = client.get(f"/api/accounts/{account.id}/jobs").json()
     assert any(job["status"] == "IN_CLAUDE_CODE" for job in jobs)
+    client.post("/api/admin/exit-view-as")
+
+
+def test_github_error_detail_names_the_actual_problem():
+    """A bare status hid why creating the PR failed."""
+    from app.dashboard import _github_error_detail
+
+    response = httpx.Response(
+        422,
+        json={
+            "message": "Validation Failed",
+            "errors": [{"message": "A pull request already exists for octocat:solver/issue-319."}],
+        },
+        request=httpx.Request("POST", "https://api.github.com/repos/o/r/pulls"),
+    )
+
+    detail = _github_error_detail(response)
+
+    assert "Validation Failed" in detail
+    assert "A pull request already exists" in detail
+
+
+def test_github_error_detail_tolerates_a_body_that_is_not_json():
+    from app.dashboard import _github_error_detail
+
+    response = httpx.Response(
+        502, text="<html>bad gateway</html>",
+        request=httpx.Request("POST", "https://api.github.com/repos/o/r/pulls"),
+    )
+
+    assert _github_error_detail(response) == ""
+
+
+def _claude_job(account, number, branch):
+    async def build():
+        async with AsyncSessionLocal() as db:
+            job = IssueJob(
+                telegram_id=account.telegram_id,
+                repo_full_name="o/r",
+                issue_number=number,
+                issue_title="Needs a fix",
+                issue_url=f"https://github.com/o/r/issues/{number}",
+                status="IN_CLAUDE_CODE",
+                branch_name=branch,
+            )
+            db.add(job)
+            await db.commit()
+    asyncio.run(build())
+
+
+def test_claude_pr_adopts_a_pull_request_the_session_already_opened(monkeypatch, tmp_path):
+    """Claude may open the PR itself despite being told not to; creating a
+    second one returns GitHub 422 and the job never reaches the CI watcher."""
+    from unittest.mock import patch
+
+    _login_admin(monkeypatch)
+    created = client.post(
+        "/api/admin/users",
+        json={"username": "adoptuser", "temporary_password": "temp-password-1"},
+    ).json()
+    account = asyncio.run(_add_dashboard_account(created["id"], "octocat"))
+    assert client.post(f"/api/admin/users/{created['id']}/view-as").status_code == 200
+    _claude_job(account, 319, "solver/issue-319")
+
+    existing_pr = {"number": 12, "html_url": "https://github.com/o/r/pull/12"}
+
+    with patch.object(gh, "get_repository", autospec=True) as get_repository, \
+         patch.object(gh, "find_open_pr_by_head", autospec=True) as find_pr, \
+         patch.object(gh, "create_draft_pr", autospec=True) as create_pr, \
+         patch.object(claude_handoff, "commits_ahead", autospec=True) as commits, \
+         patch.object(claude_handoff, "push_branch", autospec=True) as push:
+        get_repository.return_value = {"default_branch": "main", "name": "r"}
+        find_pr.return_value = existing_pr
+        commits.return_value = ["abc123 fix it"]
+        push.return_value = "abc123"
+
+        response = client.post(
+            f"/api/accounts/{account.id}/issues/claude-pr",
+            json={"repo": "o/r", "number": 319},
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["adopted"] is True
+    assert body["pr_url"] == existing_pr["html_url"]
+    create_pr.assert_not_called()
+
+    jobs = client.get(f"/api/accounts/{account.id}/jobs").json()
+    job = next(j for j in jobs if j["number"] == 319)
+    # Handed to the existing CI watcher rather than left stranded.
+    assert job["status"] == "WAITING_CI"
+    client.post("/api/admin/exit-view-as")
+
+
+def test_claude_pr_creates_one_when_the_session_left_it_alone(monkeypatch, tmp_path):
+    from unittest.mock import patch
+
+    _login_admin(monkeypatch)
+    created = client.post(
+        "/api/admin/users",
+        json={"username": "createuser", "temporary_password": "temp-password-1"},
+    ).json()
+    account = asyncio.run(_add_dashboard_account(created["id"], "octocat"))
+    assert client.post(f"/api/admin/users/{created['id']}/view-as").status_code == 200
+    _claude_job(account, 320, "solver/issue-320")
+
+    with patch.object(gh, "get_repository", autospec=True) as get_repository, \
+         patch.object(gh, "find_open_pr_by_head", autospec=True) as find_pr, \
+         patch.object(gh, "create_draft_pr", autospec=True) as create_pr, \
+         patch.object(claude_handoff, "commits_ahead", autospec=True) as commits, \
+         patch.object(claude_handoff, "push_branch", autospec=True) as push:
+        get_repository.return_value = {"default_branch": "main", "name": "r"}
+        find_pr.return_value = None
+        create_pr.return_value = {"number": 13, "html_url": "https://github.com/o/r/pull/13"}
+        commits.return_value = ["abc123 fix it"]
+        push.return_value = "abc123"
+
+        response = client.post(
+            f"/api/accounts/{account.id}/issues/claude-pr",
+            json={"repo": "o/r", "number": 320},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["adopted"] is False
+    create_pr.assert_called_once()
+    # The PR must close the issue, same as the automated path.
+    body_arg = create_pr.call_args[0][5]
+    assert "Closes #320" in body_arg
     client.post("/api/admin/exit-view-as")

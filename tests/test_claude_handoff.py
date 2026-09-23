@@ -53,7 +53,8 @@ def test_prompt_states_the_issue_branch_and_the_finishing_line():
     assert "main" in prompt
     assert "Passing an empty string raises IndexError." in prompt
     # The dashboard opens the PR so it carries the Closes link and CI tracking.
-    assert "Do not open the pull request" in prompt
+    assert "Stop after committing" in prompt
+    assert "gh pr create" in prompt
 
 
 def test_prompt_truncates_a_huge_issue_body():

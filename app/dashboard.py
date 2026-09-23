@@ -163,12 +163,38 @@ def _record_login_failure(key: str) -> None:
     LOGIN_ATTEMPTS[key].append(datetime.now(timezone.utc))
 
 
+def _github_error_detail(response: httpx.Response) -> str:
+    """The human-readable part of a GitHub error body, if there is one.
+
+    A bare status hides what went wrong -- a 422 on pull creation says
+    "A pull request already exists" or "No commits between ...", and the
+    operator needs to see which.
+    """
+    try:
+        payload = response.json()
+    except ValueError:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    parts = []
+    message = payload.get("message")
+    if isinstance(message, str) and message:
+        parts.append(message)
+    for error in payload.get("errors") or []:
+        if isinstance(error, dict) and isinstance(error.get("message"), str):
+            parts.append(error["message"])
+    joined = " ".join(" ".join(parts).split())
+    return f" - {joined[:300]}" if joined else ""
+
+
 async def _safe_github_call(coro):
     try:
         return await coro
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
-            status_code=400, detail=f"GitHub error: HTTP {exc.response.status_code}"
+            status_code=400,
+            detail=f"GitHub error: HTTP {exc.response.status_code}"
+                   f"{_github_error_detail(exc.response)}",
         ) from exc
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"GitHub request failed: {exc}") from exc
@@ -995,26 +1021,37 @@ async def open_claude_session_pr(
             "changed_files": [],
             "test_plan": "See the commits on this branch; CI validates the change.",
         }
-        pull_request = await _safe_github_call(gh.create_draft_pr(
-            token,
-            payload.repo,
-            f"{account.github_username}:{branch}",
-            base_branch,
-            _pr_title(job.issue_title),
-            _pr_body(job, summary),
-        ))
+        head = f"{account.github_username}:{branch}"
+        # The session is told to leave the PR to the dashboard, but Claude may
+        # open one anyway. Adopt it instead of failing on GitHub's 422, so the
+        # job still reaches the CI watcher either way.
+        pull_request = await _safe_github_call(
+            gh.find_open_pr_by_head(token, payload.repo, head)
+        )
+        adopted = pull_request is not None
+        if not adopted:
+            pull_request = await _safe_github_call(gh.create_draft_pr(
+                token,
+                payload.repo,
+                head,
+                base_branch,
+                _pr_title(job.issue_title),
+                _pr_body(job, summary),
+            ))
         job.status = "WAITING_CI"
         job.draft_pr_number = pull_request.get("number")
         job.draft_pr_url = pull_request.get("html_url")
         job.head_sha = head_sha
         job.result_summary = (
-            f"Draft PR opened from a Claude Code session ({len(commits)} commit(s))."
+            f"{'Adopted the PR opened in' if adopted else 'Draft PR opened from'} "
+            f"a Claude Code session ({len(commits)} commit(s))."
         )
         job.next_attempt_at = datetime.utcnow()
         await db.commit()
 
     return {
         "opened": True,
+        "adopted": adopted,
         "pr_url": pull_request.get("html_url"),
         "commits": len(commits),
     }

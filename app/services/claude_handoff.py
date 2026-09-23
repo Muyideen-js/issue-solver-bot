@@ -95,8 +95,9 @@ def build_prompt(issue: dict, repo: str, branch: str, base_branch: str) -> str:
         "3. Run the project's tests if it has any.",
         f"4. Commit to {branch} with a clear message.",
         "",
-        "Do not open the pull request and do not push -- the dashboard does that,"
-        " so the PR gets the right 'Closes' link and CI tracking. Just commit.",
+        "Stop after committing. Do not run git push, gh pr create, or open a pull"
+        " request -- the dashboard does that, so the PR carries the right"
+        " 'Closes' link and gets CI tracking.",
         "",
         "The GitHub CLI in this terminal is already signed in as the account this"
         " issue is assigned to, so `gh issue view` and similar work as-is.",
