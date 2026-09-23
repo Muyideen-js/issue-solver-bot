@@ -19,17 +19,17 @@ ISSUE = {
 def test_workspace_path_is_filesystem_safe(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAUDE_HANDOFF_ROOT", str(tmp_path))
 
-    path = claude_handoff.workspace_path("Owner/My.Repo", 7)
+    path = claude_handoff.workspace_path("Owner/My.Repo", 7, "octocat")
 
     assert path.parent == tmp_path.resolve()
-    assert path.name == "Owner__My.Repo-issue-7"
+    assert path.name == "octocat__Owner__My.Repo-issue-7"
     assert "/" not in path.name
 
 
 def test_workspace_path_strips_characters_that_could_escape_the_root(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAUDE_HANDOFF_ROOT", str(tmp_path))
 
-    path = claude_handoff.workspace_path("../../etc/pas swd", 1)
+    path = claude_handoff.workspace_path("../../etc/pas swd", 1, "octocat")
 
     assert path.parent == tmp_path.resolve()
     assert ".." not in path.name.replace("-", "")
@@ -137,13 +137,14 @@ async def test_prepare_rejects_a_branch_name_that_could_inject_git_flags(tmp_pat
             base_branch="main",
             branch="--upload-pack=evil",
             issue_number=1,
+            account="octocat",
         )
 
 
 @pytest.mark.asyncio
 async def test_prepare_reuses_an_existing_checkout(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_HANDOFF_ROOT", str(tmp_path))
-    target = claude_handoff.workspace_path("owner/repo", 42)
+    target = claude_handoff.workspace_path("owner/repo", 42, "octocat")
     (target / ".git").mkdir(parents=True)
 
     async def fail_git(*args, **kwargs):
@@ -159,6 +160,7 @@ async def test_prepare_reuses_an_existing_checkout(tmp_path, monkeypatch):
         base_branch="main",
         branch="solver/issue-42",
         issue_number=42,
+        account="octocat",
     )
 
     assert result == target
@@ -167,7 +169,7 @@ async def test_prepare_reuses_an_existing_checkout(tmp_path, monkeypatch):
 def test_discard_checkout_reports_when_there_was_nothing_to_remove(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAUDE_HANDOFF_ROOT", str(tmp_path))
 
-    assert claude_handoff.discard_checkout("owner/repo", 999) is False
+    assert claude_handoff.discard_checkout("owner/repo", 999, "octocat") is False
 
 
 def test_session_env_authenticates_gh_as_the_issue_account(monkeypatch):
@@ -219,3 +221,68 @@ def test_launch_passes_the_session_environment_to_the_terminal(tmp_path, monkeyp
     # The token must travel in the environment, never on the command line,
     # where it would show up in process listings.
     assert "scoped-token" not in " ".join(captured["command"])
+
+
+def test_two_accounts_on_the_same_issue_get_separate_checkouts(monkeypatch, tmp_path):
+    """Both accounts can be assigned one issue; a shared working tree would let
+    two sessions collide and push with each other's credentials."""
+    monkeypatch.setenv("CLAUDE_HANDOFF_ROOT", str(tmp_path))
+
+    alice = claude_handoff.workspace_path("owner/repo", 42, "alice")
+    bob = claude_handoff.workspace_path("owner/repo", 42, "bob")
+
+    assert alice != bob
+    assert alice.parent == bob.parent == tmp_path.resolve()
+
+
+def test_one_account_on_different_issues_gets_separate_checkouts(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAUDE_HANDOFF_ROOT", str(tmp_path))
+
+    first = claude_handoff.workspace_path("owner/repo", 1, "alice")
+    second = claude_handoff.workspace_path("owner/repo", 2, "alice")
+
+    assert first != second
+
+
+def test_account_names_cannot_escape_the_workspace_root(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAUDE_HANDOFF_ROOT", str(tmp_path))
+
+    path = claude_handoff.workspace_path("owner/repo", 1, "../../evil")
+
+    assert path.parent == tmp_path.resolve()
+    assert ".." not in path.name.replace("-", "")
+
+
+@pytest.mark.asyncio
+async def test_simultaneous_prepares_clone_once(monkeypatch, tmp_path):
+    """Four clicks at once must not all start cloning into one directory."""
+    monkeypatch.setenv("CLAUDE_HANDOFF_ROOT", str(tmp_path))
+    claude_handoff._prepare_locks.clear()
+    clones = []
+
+    async def fake_git(*args, **kwargs):
+        if args[0] == "clone":
+            clones.append(args)
+            # Mark the checkout as present, as a real clone would.
+            Path(args[-1], ".git").mkdir(parents=True, exist_ok=True)
+        return ""
+
+    monkeypatch.setattr(claude_handoff, "_git", fake_git)
+
+    async def prepare():
+        return await claude_handoff.prepare_checkout(
+            token="t",
+            upstream_repo="owner/repo",
+            upstream_clone_url="https://github.com/owner/repo.git",
+            fork_clone_url="https://github.com/me/repo.git",
+            base_branch="main",
+            branch="solver/issue-9",
+            issue_number=9,
+            account="alice",
+        )
+
+    import asyncio as _asyncio
+    results = await _asyncio.gather(*(prepare() for _ in range(4)))
+
+    assert len(clones) == 1
+    assert len(set(results)) == 1

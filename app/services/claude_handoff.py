@@ -40,16 +40,27 @@ def workspace_root() -> Path:
     return (Path.cwd() / ".solver-work" / "claude").resolve()
 
 
-def workspace_path(repo: str, issue_number: int) -> Path:
-    """A stable, filesystem-safe directory for one issue's checkout.
+def _slug(value: str, fallback: str) -> str:
+    """Filesystem-safe single path component.
 
-    Repo names are validated before they reach here, so this is belt and
-    braces: run-together dots are collapsed and leading dots stripped so the
-    directory can never be a relative-path component or a hidden folder.
+    Inputs are validated before they reach here, so this is belt and braces:
+    run-together dots are collapsed and leading dots stripped so a component
+    can never be a relative-path element or a hidden folder.
     """
-    slug = re.sub(r"[^A-Za-z0-9_.-]", "-", repo.replace("/", "__"))
-    slug = re.sub(r"\.{2,}", "-", slug).lstrip(".-") or "repo"
-    return workspace_root() / f"{slug}-issue-{int(issue_number)}"
+    slug = re.sub(r"[^A-Za-z0-9_.-]", "-", value.replace("/", "__"))
+    return re.sub(r"\.{2,}", "-", slug).lstrip(".-") or fallback
+
+
+def workspace_path(repo: str, issue_number: int, account: str) -> Path:
+    """A stable checkout directory for one issue, per account.
+
+    The account belongs in the key: two dashboard accounts can both be assigned
+    the same issue in the same repo, and sharing one checkout would put two
+    sessions in one working tree, pushing with each other's credentials.
+    """
+    return workspace_root() / (
+        f"{_slug(account, 'account')}__{_slug(repo, 'repo')}-issue-{int(issue_number)}"
+    )
 
 
 def branch_name(issue_number: int) -> str:
@@ -164,6 +175,16 @@ async def _git(*args: str, cwd: Path | None = None, token: str | None = None) ->
     return (stdout or b"").decode("utf-8", "replace")
 
 
+# One lock per checkout path. Two clicks on the same issue would otherwise both
+# see no .git, both start cloning into one directory, and the second would fail
+# on a non-empty target.
+_prepare_locks: dict[str, asyncio.Lock] = {}
+
+
+def _prepare_lock(target: Path) -> asyncio.Lock:
+    return _prepare_locks.setdefault(str(target), asyncio.Lock())
+
+
 async def prepare_checkout(
     token: str,
     upstream_repo: str,
@@ -172,6 +193,7 @@ async def prepare_checkout(
     base_branch: str,
     branch: str,
     issue_number: int,
+    account: str,
 ) -> Path:
     """Clone upstream, add the fork as a push remote, and cut the work branch.
 
@@ -180,19 +202,20 @@ async def prepare_checkout(
     """
     _validate_branch(branch)
     _validate_branch(base_branch)
-    target = workspace_path(upstream_repo, issue_number)
-    target.parent.mkdir(parents=True, exist_ok=True)
+    target = workspace_path(upstream_repo, issue_number, account)
 
-    if (target / ".git").exists():
-        logger.info("Reusing existing Claude Code checkout at %s", target)
-        return target
+    async with _prepare_lock(target):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if (target / ".git").exists():
+            logger.info("Reusing existing Claude Code checkout at %s", target)
+            return target
 
-    await _git(
-        "clone", "--no-tags", "--single-branch", "--branch", base_branch,
-        upstream_clone_url, str(target), token=token,
-    )
-    await _git("remote", "add", "fork", fork_clone_url, cwd=target, token=token)
-    await _git("checkout", "-b", branch, cwd=target, token=token)
+        await _git(
+            "clone", "--no-tags", "--single-branch", "--branch", base_branch,
+            upstream_clone_url, str(target), token=token,
+        )
+        await _git("remote", "add", "fork", fork_clone_url, cwd=target, token=token)
+        await _git("checkout", "-b", branch, cwd=target, token=token)
     return target
 
 
@@ -255,9 +278,9 @@ async def push_branch(token: str, checkout: Path, branch: str, base_branch: str)
     return (await _git("rev-parse", "HEAD", cwd=checkout, token=token)).strip()
 
 
-def discard_checkout(repo: str, issue_number: int) -> bool:
+def discard_checkout(repo: str, issue_number: int, account: str) -> bool:
     """Remove a finished checkout. Returns whether anything was deleted."""
-    target = workspace_path(repo, issue_number)
+    target = workspace_path(repo, issue_number, account)
     if not target.exists():
         return False
     shutil.rmtree(target, ignore_errors=True)

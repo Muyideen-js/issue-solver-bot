@@ -903,6 +903,7 @@ async def start_claude_session(
             base_branch=base_branch,
             branch=branch,
             issue_number=payload.number,
+            account=account.github_username,
         )
         prompt = claude_handoff.build_prompt(issue, payload.repo, branch, base_branch)
         # Scope this account's token to the session so git and gh inside it act
@@ -976,7 +977,9 @@ async def open_claude_session_pr(
     token = decrypt_token(account.github_token_encrypted)
     repository = await _safe_github_call(gh.get_repository(token, payload.repo))
     base_branch = repository.get("default_branch") or "main"
-    checkout = claude_handoff.workspace_path(payload.repo, payload.number)
+    checkout = claude_handoff.workspace_path(
+        payload.repo, payload.number, account.github_username
+    )
     try:
         commits = await claude_handoff.commits_ahead(token, checkout, base_branch)
         head_sha = await claude_handoff.push_branch(token, checkout, branch, base_branch)
