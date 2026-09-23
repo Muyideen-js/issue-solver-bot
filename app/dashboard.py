@@ -905,7 +905,11 @@ async def start_claude_session(
             issue_number=payload.number,
         )
         prompt = claude_handoff.build_prompt(issue, payload.repo, branch, base_branch)
-        claude_handoff.launch_terminal(checkout, prompt)
+        # Scope this account's token to the session so git and gh inside it act
+        # as the account that owns the issue, not the machine's global login.
+        claude_handoff.launch_terminal(
+            checkout, prompt, env=claude_handoff.session_env(token)
+        )
     except HandoffError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

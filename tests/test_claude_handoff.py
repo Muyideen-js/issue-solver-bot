@@ -168,3 +168,54 @@ def test_discard_checkout_reports_when_there_was_nothing_to_remove(monkeypatch, 
     monkeypatch.setenv("CLAUDE_HANDOFF_ROOT", str(tmp_path))
 
     assert claude_handoff.discard_checkout("owner/repo", 999) is False
+
+
+def test_session_env_authenticates_gh_as_the_issue_account(monkeypatch):
+    """Each dashboard account has its own token; the machine's gh login is one
+    unrelated account, so the session must override it."""
+    monkeypatch.setenv("GH_TOKEN", "the-machines-global-account")
+
+    env = claude_handoff.session_env("account-specific-token")
+
+    assert env["GH_TOKEN"] == "account-specific-token"
+    assert env["GITHUB_TOKEN"] == "account-specific-token"
+
+
+def test_session_env_authenticates_git_pushes_from_inside_the_session():
+    env = claude_handoff.session_env("account-specific-token")
+
+    assert env["GIT_CONFIG_COUNT"] == "1"
+    assert env["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraheader"
+    # Basic auth is base64, so the raw token must not appear verbatim.
+    assert "account-specific-token" not in env["GIT_CONFIG_VALUE_0"]
+    assert env["GIT_CONFIG_VALUE_0"].startswith("AUTHORIZATION: basic ")
+
+
+def test_session_env_keeps_the_parent_environment_claude_needs(monkeypatch):
+    monkeypatch.setenv("APPDATA", "C:/Users/someone/AppData/Roaming")
+
+    env = claude_handoff.session_env("token")
+
+    assert env.get("PATH")
+    assert env["APPDATA"] == "C:/Users/someone/AppData/Roaming"
+
+
+def test_launch_passes_the_session_environment_to_the_terminal(tmp_path, monkeypatch):
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            captured["command"] = command
+            captured["env"] = kwargs.get("env")
+
+    monkeypatch.setattr(claude_handoff, "claude_cli_path", lambda: "C:/claude.cmd")
+    monkeypatch.setattr(claude_handoff.subprocess, "Popen", FakePopen)
+
+    claude_handoff.launch_terminal(
+        tmp_path, "fix it", env=claude_handoff.session_env("scoped-token")
+    )
+
+    assert captured["env"]["GH_TOKEN"] == "scoped-token"
+    # The token must travel in the environment, never on the command line,
+    # where it would show up in process listings.
+    assert "scoped-token" not in " ".join(captured["command"])

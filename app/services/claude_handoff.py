@@ -11,6 +11,7 @@ reached through a tunnel would pop the window on the host, not the viewer's
 screen.
 """
 import asyncio
+import base64
 import logging
 import os
 import re
@@ -84,6 +85,9 @@ def build_prompt(issue: dict, repo: str, branch: str, base_branch: str) -> str:
         "",
         "Do not open the pull request and do not push -- the dashboard does that,"
         " so the PR gets the right 'Closes' link and CI tracking. Just commit.",
+        "",
+        "The GitHub CLI in this terminal is already signed in as the account this"
+        " issue is assigned to, so `gh issue view` and similar work as-is.",
     ])
 
 
@@ -108,6 +112,33 @@ def build_launch_command(cwd: Path, prompt: str) -> list[str]:
 
 def claude_cli_path() -> str | None:
     return shutil.which("claude")
+
+
+def session_env(token: str) -> dict[str, str]:
+    """Environment for one session, scoped to the account that owns the issue.
+
+    Each dashboard account has its own GitHub token, and the machine's global
+    `gh auth login` is a single unrelated account -- so without this a push or
+    `gh` call inside the session would act as the wrong identity, or none.
+
+    GH_TOKEN takes precedence over gh's stored credentials, and the git
+    extraheader does the same for git, so this authenticates the session
+    without touching the machine's global login and without writing the token
+    to disk. It lives only in that terminal's environment and dies with it.
+
+    The full parent environment is inherited deliberately: Claude Code needs
+    PATH, APPDATA and its own config to start at all.
+    """
+    encoded = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    env = dict(os.environ)
+    env["GH_TOKEN"] = token
+    # Some tooling reads the other spelling; set both so neither falls back to
+    # the machine's global account.
+    env["GITHUB_TOKEN"] = token
+    env["GIT_CONFIG_COUNT"] = "1"
+    env["GIT_CONFIG_KEY_0"] = "http.https://github.com/.extraheader"
+    env["GIT_CONFIG_VALUE_0"] = f"AUTHORIZATION: basic {encoded}"
+    return env
 
 
 async def _git(*args: str, cwd: Path | None = None, token: str | None = None) -> str:
@@ -165,11 +196,13 @@ async def prepare_checkout(
     return target
 
 
-def launch_terminal(cwd: Path, prompt: str) -> list[str]:
+def launch_terminal(cwd: Path, prompt: str, env: dict[str, str] | None = None) -> list[str]:
     """Open the terminal and return the command used, for the dashboard to show.
 
     Spawned detached so the HTTP request does not wait on a session the person
-    may keep open for an hour.
+    may keep open for an hour. Verified that both Windows Terminal and the
+    classic console inherit the environment passed here, which is what carries
+    the account's credentials into the session.
     """
     if not claude_cli_path():
         raise HandoffError(
@@ -186,6 +219,7 @@ def launch_terminal(cwd: Path, prompt: str) -> list[str]:
         subprocess.Popen(
             command,
             cwd=str(cwd),
+            env=env,
             close_fds=True,
             creationflags=creation_flags,
         )
