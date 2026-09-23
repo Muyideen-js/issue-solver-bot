@@ -198,6 +198,34 @@ This is the simplest setup but it is awake 24/7, which exhausts any host that
 meters uptime (and any database that meters compute hours, because the poller
 queries often enough that it never auto-suspends).
 
+### On your own machine (Windows, always-on)
+
+Nothing to sign up for and nothing that expires: SQLite lives on your disk,
+Telegram uses long polling so no public URL is needed, and the dashboard is on
+`http://localhost:8010/dashboard`.
+
+```powershell
+copy .env.example .env      # then fill in the three required values
+python scripts\generate_key.py   # ENCRYPTION_KEY, if you need a new one
+powershell -ExecutionPolicy Bypass -File scripts\install_startup_task.ps1
+Start-ScheduledTask -TaskName IssueSolverBot
+```
+
+`install_startup_task.ps1` registers a Scheduled Task that starts the bot at log
+on with no console window, needing neither admin rights nor a stored password.
+`run_local.ps1` supervises uvicorn and restarts it if it exits, writing to
+`logs/bot-<date>.log` and `logs/supervisor.log`. Remove it with
+`install_startup_task.ps1 -Uninstall`.
+
+Two caveats specific to running it yourself:
+
+- **The bot stops when the machine sleeps.** Keep it awake on AC power with
+  `powercfg /change standby-timeout-ac 0` (run as admin), or accept that
+  discovery pauses while the PC is asleep and resumes on wake.
+- **Back up `solver.db` and `ENCRYPTION_KEY` together.** The database stores
+  GitHub tokens encrypted with that key, so one without the other is useless,
+  and a lost database makes the bot re-queue issues it has already solved.
+
 ### Split: scheduled solver + sleeping web service
 
 Keeps the same hosts within their free allowances by letting the web service

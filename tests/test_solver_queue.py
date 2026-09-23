@@ -480,3 +480,18 @@ async def test_run_discovery_once_reports_jobs_queued_without_looping(monkeypatc
     queued = await asyncio.wait_for(solver_queue.run_discovery_once(), timeout=5)
 
     assert queued == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_claims_never_hand_out_the_same_job():
+    """SQLite ignores skip_locked, so the claim must serialise in-process."""
+    user = await _add_user("777")
+    job_id = await _add_job(user.telegram_id, "o/r", 99)
+
+    claims = await asyncio.gather(
+        *(solver_queue._claim_next_job() for _ in range(5))
+    )
+
+    assert sorted(c for c in claims if c is not None) == [job_id]
+    async with AsyncSessionLocal() as db:
+        assert (await db.get(IssueJob, job_id)).status == "PROCESSING"

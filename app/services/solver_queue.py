@@ -275,8 +275,15 @@ async def _drain_lane(stop_event: asyncio.Event) -> int:
     return processed
 
 
+# SQLite ignores FOR UPDATE SKIP LOCKED, so on a local SQLite database two
+# lanes can select the same row before either commits PROCESSING and end up
+# opening duplicate PRs. Serialising the claim inside the process closes that
+# window; on Postgres skip_locked still guards against other processes.
+_claim_lock = asyncio.Lock()
+
+
 async def _claim_next_job() -> int | None:
-    async with AsyncSessionLocal() as db:
+    async with _claim_lock, AsyncSessionLocal() as db:
         result = await db.execute(
             select(IssueJob)
             .where(
