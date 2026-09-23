@@ -27,6 +27,11 @@ from app.services.workspace import SolverWorkspace, WorkspaceError
 
 logger = logging.getLogger(__name__)
 
+# A job a person is solving by hand in an interactive Claude Code session.
+# _claim_next_job only takes QUEUED and WAITING_CI, so the automated solver
+# leaves these alone and cannot fight the human over the same branch.
+CLAUDE_CODE_STATUS = "IN_CLAUDE_CODE"
+
 
 class MissingUserAIKeyError(CodingAgentError):
     pass

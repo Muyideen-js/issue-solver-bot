@@ -105,6 +105,7 @@
       NEEDS_REVIEW: ["badge-warn", "Needs attention"],
       NEEDS_API_KEY: ["badge-danger", "AI key required"],
       NEEDS_TESTS: ["badge-warn", "No CI checks"],
+      IN_CLAUDE_CODE: ["badge-accent", "In Claude Code"],
     };
     const [cls, label] = map[status] || ["", status];
     return `<span class="badge ${cls}">${esc(label)}</span>`;
@@ -251,6 +252,9 @@
           <td>${statusBadge(issue.status)} ${prLink}</td>
           <td class="row-actions">
             ${canFix ? `<button class="btn btn-primary" data-fix="${esc(issue.repo)}|${issue.number}|${esc(issue.title)}|${esc(issue.url)}">Fix</button>` : ""}
+            ${canFix ? `<button class="btn" data-claude="${esc(issue.repo)}|${issue.number}|${esc(issue.title)}|${esc(issue.url)}" title="Clone, branch, and open a Claude Code terminal on this machine so you can fix it yourself">Fix in Claude Code</button>` : ""}
+            ${issue.status === "IN_CLAUDE_CODE" ? `<button class="btn btn-primary" data-claude-pr="${esc(issue.repo)}|${issue.number}|${esc(issue.title)}|${esc(issue.url)}" title="Push what you committed and open the draft PR">Open the PR</button>` : ""}
+            ${issue.status === "IN_CLAUDE_CODE" ? `<button class="btn" data-claude="${esc(issue.repo)}|${issue.number}|${esc(issue.title)}|${esc(issue.url)}" title="Reopen the Claude Code terminal for this checkout">Reopen terminal</button>` : ""}
             ${retryNowBtn}
             ${recheckBtn}
             ${readyBtn}
@@ -343,6 +347,12 @@
     panelEl.querySelectorAll("[data-retry-now]").forEach((btn) => {
       btn.addEventListener("click", () => onRetryNow(btn.dataset.retryNow, btn));
     });
+    panelEl.querySelectorAll("[data-claude]").forEach((btn) => {
+      btn.addEventListener("click", () => onClaudeSession(btn.dataset.claude, btn));
+    });
+    panelEl.querySelectorAll("[data-claude-pr]").forEach((btn) => {
+      btn.addEventListener("click", () => onClaudePr(btn.dataset.claudePr, btn));
+    });
   }
 
   function parseKey(raw) {
@@ -358,6 +368,47 @@
           method: "POST",
           body: JSON.stringify({ repo, number, title, url }),
         });
+        await refreshPanel();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+  }
+
+  async function onClaudeSession(raw, btn) {
+    const { repo, number, title, url } = parseKey(raw);
+    await withBusy(btn, "Opening", async () => {
+      try {
+        const result = await api(`/api/accounts/${state.activeAccountId}/issues/claude-session`, {
+          method: "POST",
+          body: JSON.stringify({ repo, number, title, url }),
+        });
+        // The terminal opens on the machine running the bot, which may not be
+        // the machine this page is open on, so say where it went.
+        alert(`Claude Code opened on the bot's machine.
+
+Branch: ${result.branch}
+Folder: ${result.checkout}
+
+Commit when you're happy, then click "Open the PR".`);
+        await refreshPanel();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+  }
+
+  async function onClaudePr(raw, btn) {
+    const { repo, number, title, url } = parseKey(raw);
+    await withBusy(btn, "Opening PR", async () => {
+      try {
+        const result = await api(`/api/accounts/${state.activeAccountId}/issues/claude-pr`, {
+          method: "POST",
+          body: JSON.stringify({ repo, number, title, url }),
+        });
+        alert(`Draft PR opened from ${result.commits} commit(s).
+
+${result.pr_url}`);
         await refreshPanel();
       } catch (err) {
         alert(err.message);

@@ -24,6 +24,8 @@ from app.models.database import (
     telegram_ids_sharing_username,
 )
 from app.services import github as gh
+from app.services import claude_handoff
+from app.services.claude_handoff import HandoffError
 from app.services.coding_agent import CodingAgentError, test_ai_connection
 from app.services.crypto import decrypt_token, encrypt_token
 from app.services.password import hash_password, verify_password
@@ -34,6 +36,9 @@ from app.services.llm_providers import (
     providers_for_api,
 )
 from app.services.solver_queue import (
+    CLAUDE_CODE_STATUS,
+    _pr_body,
+    _pr_title,
     _reset_job_for_retry,
     enqueue_issue,
     queue_all_issues_for_account,
@@ -861,6 +866,149 @@ async def fix_issue(
             await db.commit()
             queued = adopted is not None
     return {"queued": queued}
+
+
+@router.post("/api/accounts/{account_id}/issues/claude-session")
+async def start_claude_session(
+    account_id: int, payload: IssueRef, scope_user: PortalUser = Depends(current_scope_user)
+):
+    """Prepare a checkout and open an interactive Claude Code terminal for it.
+
+    The window opens on the machine running this service, which is the point --
+    the person drives Claude Code themselves under their own login. The bot only
+    does the setup and, later, the pull request.
+    """
+    _validate_repo(payload.repo)
+    async with AsyncSessionLocal() as db:
+        account = await _get_dashboard_account(db, account_id, scope_user)
+    token = decrypt_token(account.github_token_encrypted)
+    issue = await _safe_github_call(gh.get_issue(token, payload.repo, payload.number))
+    if not gh.is_open_and_assigned(issue, account.github_username):
+        raise HTTPException(
+            status_code=409, detail="Issue is no longer open and assigned to this account"
+        )
+
+    repository = await _safe_github_call(gh.get_repository(token, payload.repo))
+    base_branch = repository.get("default_branch") or "main"
+    fork = await _safe_github_call(
+        gh.ensure_personal_fork(token, account.github_username, payload.repo)
+    )
+    branch = claude_handoff.branch_name(payload.number)
+    try:
+        checkout = await claude_handoff.prepare_checkout(
+            token=token,
+            upstream_repo=payload.repo,
+            upstream_clone_url=repository["clone_url"],
+            fork_clone_url=fork["clone_url"],
+            base_branch=base_branch,
+            branch=branch,
+            issue_number=payload.number,
+        )
+        prompt = claude_handoff.build_prompt(issue, payload.repo, branch, base_branch)
+        claude_handoff.launch_terminal(checkout, prompt)
+    except HandoffError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    async with AsyncSessionLocal() as db:
+        account = await _get_dashboard_account(db, account_id, scope_user)
+        result = await db.execute(
+            select(IssueJob).where(
+                IssueJob.telegram_id == account.telegram_id,
+                IssueJob.repo_full_name == payload.repo,
+                IssueJob.issue_number == payload.number,
+            )
+        )
+        job = result.scalars().first()
+        if job is None:
+            job = IssueJob(
+                telegram_id=account.telegram_id,
+                repo_full_name=payload.repo,
+                issue_number=payload.number,
+                issue_title=issue.get("title") or f"Issue #{payload.number}",
+                issue_url=issue.get("html_url") or "",
+            )
+            db.add(job)
+        job.status = CLAUDE_CODE_STATUS
+        job.branch_name = branch
+        job.last_error = None
+        job.result_summary = f"Claude Code session opened at {checkout}"
+        await db.commit()
+
+    return {
+        "started": True,
+        "checkout": str(checkout),
+        "branch": branch,
+        "base_branch": base_branch,
+    }
+
+
+@router.post("/api/accounts/{account_id}/issues/claude-pr")
+async def open_claude_session_pr(
+    account_id: int, payload: IssueRef, scope_user: PortalUser = Depends(current_scope_user)
+):
+    """Push what the session committed and open the draft PR the solver would.
+
+    Reuses the automated path's title and body so the PR still closes the issue,
+    then leaves the job in WAITING_CI for the existing watcher and repair loop.
+    """
+    _validate_repo(payload.repo)
+    async with AsyncSessionLocal() as db:
+        account = await _get_dashboard_account(db, account_id, scope_user)
+        result = await db.execute(
+            select(IssueJob).where(
+                IssueJob.telegram_id == account.telegram_id,
+                IssueJob.repo_full_name == payload.repo,
+                IssueJob.issue_number == payload.number,
+            )
+        )
+        job = result.scalars().first()
+        if job is None or job.status != CLAUDE_CODE_STATUS:
+            raise HTTPException(
+                status_code=409, detail="No open Claude Code session for this issue"
+            )
+        branch = job.branch_name or claude_handoff.branch_name(payload.number)
+        job_id = job.id
+
+    token = decrypt_token(account.github_token_encrypted)
+    repository = await _safe_github_call(gh.get_repository(token, payload.repo))
+    base_branch = repository.get("default_branch") or "main"
+    checkout = claude_handoff.workspace_path(payload.repo, payload.number)
+    try:
+        commits = await claude_handoff.commits_ahead(token, checkout, base_branch)
+        head_sha = await claude_handoff.push_branch(token, checkout, branch, base_branch)
+    except HandoffError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    async with AsyncSessionLocal() as db:
+        job = await db.get(IssueJob, job_id)
+        summary = {
+            "summary": "Fixed in an interactive Claude Code session.",
+            "changed_files": [],
+            "test_plan": "See the commits on this branch; CI validates the change.",
+        }
+        pull_request = await _safe_github_call(gh.create_draft_pr(
+            token,
+            payload.repo,
+            f"{account.github_username}:{branch}",
+            base_branch,
+            _pr_title(job.issue_title),
+            _pr_body(job, summary),
+        ))
+        job.status = "WAITING_CI"
+        job.draft_pr_number = pull_request.get("number")
+        job.draft_pr_url = pull_request.get("html_url")
+        job.head_sha = head_sha
+        job.result_summary = (
+            f"Draft PR opened from a Claude Code session ({len(commits)} commit(s))."
+        )
+        job.next_attempt_at = datetime.utcnow()
+        await db.commit()
+
+    return {
+        "opened": True,
+        "pr_url": pull_request.get("html_url"),
+        "commits": len(commits),
+    }
 
 
 @router.post("/api/accounts/{account_id}/issues/retry-now")
