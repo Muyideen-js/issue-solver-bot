@@ -2,10 +2,10 @@
 import os
 
 
-REQUIRED_SETTINGS = (
+# Needed only while Telegram is enabled; see telegram_enabled().
+TELEGRAM_SETTINGS = (
     "TELEGRAM_SOLVER_BOT_TOKEN",
     "TELEGRAM_OWNER_ID",
-    "ENCRYPTION_KEY",
 )
 
 PROVIDER_KEYS = {
@@ -15,25 +15,43 @@ PROVIDER_KEYS = {
 }
 
 
+def telegram_enabled() -> bool:
+    """False when TELEGRAM_MODE=off, i.e. the dashboard is the only interface."""
+    return (os.getenv("TELEGRAM_MODE") or "polling").strip().lower() != "off"
+
+
 def validate_settings() -> None:
-    missing = [name for name in REQUIRED_SETTINGS if not os.getenv(name)]
+    with_telegram = telegram_enabled()
+    missing = [] if os.getenv("ENCRYPTION_KEY") else ["ENCRYPTION_KEY"]
+    if with_telegram:
+        missing += [name for name in TELEGRAM_SETTINGS if not os.getenv(name)]
+    elif not os.getenv("DASHBOARD_PASSWORD"):
+        # With Telegram off the dashboard is the only way in, and it stays
+        # disabled until a password exists, which would leave no interface.
+        missing.append("DASHBOARD_PASSWORD")
+
     provider = (os.getenv("AI_PROVIDER") or "deepseek").strip().lower()
     if provider not in PROVIDER_KEYS:
         raise RuntimeError(
             "AI_PROVIDER must be one of: deepseek, openai, gemini"
         )
-    provider_key = PROVIDER_KEYS[provider]
-    if not os.getenv(provider_key):
-        missing.append(provider_key)
+    # The environment key is only the fallback for legacy Telegram-only
+    # accounts. Dashboard accounts each supply their own key in AI settings.
+    if with_telegram and not os.getenv(PROVIDER_KEYS[provider]):
+        missing.append(PROVIDER_KEYS[provider])
     if missing:
         raise RuntimeError(f"Missing required environment settings: {', '.join(missing)}")
 
-    try:
-        owner_id = int(os.environ["TELEGRAM_OWNER_ID"])
-    except ValueError as exc:
-        raise RuntimeError("TELEGRAM_OWNER_ID must be a numeric Telegram user ID") from exc
-    if owner_id <= 0:
-        raise RuntimeError("TELEGRAM_OWNER_ID must be a positive Telegram user ID")
+    owner_raw = os.getenv("TELEGRAM_OWNER_ID")
+    if owner_raw:
+        try:
+            owner_id = int(owner_raw)
+        except ValueError as exc:
+            raise RuntimeError(
+                "TELEGRAM_OWNER_ID must be a numeric Telegram user ID"
+            ) from exc
+        if owner_id <= 0:
+            raise RuntimeError("TELEGRAM_OWNER_ID must be a positive Telegram user ID")
 
     if not os.getenv("DATABASE_URL"):
         os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///./solver.db"

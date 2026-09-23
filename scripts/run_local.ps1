@@ -43,13 +43,22 @@ foreach ($line in Get-Content (Join-Path $repo ".env")) {
         $envValues[$matches[1]] = $matches[2].Trim().Trim('"')
     }
 }
-$provider = if ($envValues["AI_PROVIDER"]) { $envValues["AI_PROVIDER"] } else { "deepseek" }
-$providerKey = switch ($provider) {
-    "openai" { "OPENAI_API_KEY" }
-    "gemini" { "GEMINI_API_KEY" }
-    default  { "DEEPSEEK_API_KEY" }
+# Mirrors app.config.validate_settings: with TELEGRAM_MODE=off the dashboard is
+# the only interface, so it needs a password but no bot token, and each
+# dashboard user supplies their own AI key in the UI.
+$mode = if ($envValues["TELEGRAM_MODE"]) { $envValues["TELEGRAM_MODE"].ToLower() } else { "polling" }
+$required = @("ENCRYPTION_KEY")
+if ($mode -eq "off") {
+    $required += "DASHBOARD_PASSWORD"
+} else {
+    $provider = if ($envValues["AI_PROVIDER"]) { $envValues["AI_PROVIDER"] } else { "deepseek" }
+    $providerKey = switch ($provider) {
+        "openai" { "OPENAI_API_KEY" }
+        "gemini" { "GEMINI_API_KEY" }
+        default  { "DEEPSEEK_API_KEY" }
+    }
+    $required += @("TELEGRAM_SOLVER_BOT_TOKEN", "TELEGRAM_OWNER_ID", $providerKey)
 }
-$required = @("TELEGRAM_SOLVER_BOT_TOKEN", "TELEGRAM_OWNER_ID", "ENCRYPTION_KEY", $providerKey)
 $missing = $required | Where-Object { -not $envValues[$_] }
 if ($missing) {
     Write-Log ("Missing required .env values: " + ($missing -join ", "))
