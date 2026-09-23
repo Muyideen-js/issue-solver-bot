@@ -44,7 +44,9 @@ def test_branch_name_matches_the_solver_convention():
 
 
 def test_prompt_states_the_issue_branch_and_the_finishing_line():
-    prompt = claude_handoff.build_prompt(ISSUE, "owner/repo", "solver/issue-42", "main")
+    prompt = claude_handoff.build_prompt(
+        ISSUE, "owner/repo", "solver/issue-42", "main", "forkowner"
+    )
 
     assert "#42" in prompt
     assert "Crash on empty input" in prompt
@@ -52,15 +54,21 @@ def test_prompt_states_the_issue_branch_and_the_finishing_line():
     assert "solver/issue-42" in prompt
     assert "main" in prompt
     assert "Passing an empty string raises IndexError." in prompt
-    # The dashboard opens the PR so it carries the Closes link and CI tracking.
-    assert "Stop after committing" in prompt
+    # The session opens its own PR; the one thing the bot must guarantee is
+    # the Closes line, since that is what links the PR to the issue.
+    assert "Closes #42" in prompt
     assert "gh pr create" in prompt
+    assert "--head forkowner:solver/issue-42" in prompt
+    assert "git push fork solver/issue-42" in prompt
+    assert "DRAFT" in prompt
 
 
 def test_prompt_truncates_a_huge_issue_body():
     issue = dict(ISSUE, body="x" * (claude_handoff.MAX_ISSUE_BODY_CHARS + 500))
 
-    prompt = claude_handoff.build_prompt(issue, "owner/repo", "solver/issue-42", "main")
+    prompt = claude_handoff.build_prompt(
+        issue, "owner/repo", "solver/issue-42", "main", "forkowner"
+    )
 
     assert "[issue body truncated]" in prompt
     assert len(prompt) < claude_handoff.MAX_ISSUE_BODY_CHARS + 2_000
@@ -68,7 +76,7 @@ def test_prompt_truncates_a_huge_issue_body():
 
 def test_prompt_handles_an_issue_with_no_description():
     prompt = claude_handoff.build_prompt(
-        dict(ISSUE, body=None), "owner/repo", "solver/issue-42", "main"
+        dict(ISSUE, body=None), "owner/repo", "solver/issue-42", "main", "forkowner"
     )
 
     assert "(no description provided)" in prompt
@@ -340,3 +348,13 @@ def test_launch_writes_the_full_prompt_to_the_task_file(tmp_path, monkeypatch):
     # The multi-line prompt must never reach the command line.
     assert NEWLINE not in " ".join(captured["command"])
     assert "1. Explore" not in " ".join(captured["command"])
+
+
+def test_prompt_tells_the_session_to_target_the_upstream_repository():
+    """A fork clone can easily open the PR against the fork by mistake."""
+    prompt = claude_handoff.build_prompt(
+        ISSUE, "upstream/repo", "solver/issue-42", "main", "forkowner"
+    )
+
+    assert "--repo upstream/repo" in prompt
+    assert "--base main" in prompt

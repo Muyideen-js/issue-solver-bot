@@ -68,12 +68,15 @@ def branch_name(issue_number: int) -> str:
     return f"solver/issue-{int(issue_number)}"
 
 
-def build_prompt(issue: dict, repo: str, branch: str, base_branch: str) -> str:
+def build_prompt(
+    issue: dict, repo: str, branch: str, base_branch: str, fork_owner: str
+) -> str:
     """The opening instruction Claude Code receives.
 
-    It states the finishing line explicitly -- commit on this branch, do not
-    open the PR -- because the dashboard opens the pull request afterwards with
-    the same body and CI tracking the automated path uses.
+    Claude opens the pull request itself. It knows what it changed and writes a
+    far better description than this path could assemble, so the only thing the
+    prompt has to guarantee is the "Closes" line that links the issue. The
+    dashboard then adopts that PR and tracks its CI.
     """
     body = (issue.get("body") or "").strip()
     if len(body) > MAX_ISSUE_BODY_CHARS:
@@ -94,13 +97,18 @@ def build_prompt(issue: dict, repo: str, branch: str, base_branch: str) -> str:
         "2. Make the change and follow the conventions already in this codebase.",
         "3. Run the project's tests if it has any.",
         f"4. Commit to {branch} with a clear message.",
+        f"5. Push it:  git push fork {branch}",
+        "6. Open a DRAFT pull request against the upstream repository:",
+        f"   gh pr create --repo {repo} --draft --base {base_branch}"
+        f" --head {fork_owner}:{branch} --title \"<short title>\""
+        " --body \"<what you changed and why>\"",
         "",
-        "Stop after committing. Do not run git push, gh pr create, or open a pull"
-        " request -- the dashboard does that, so the PR carries the right"
-        " 'Closes' link and gets CI tracking.",
+        f"The PR body MUST contain the line  Closes #{number}  so merging it"
+        " closes the issue. Leave it as a draft -- the dashboard marks it ready"
+        " for review once the repository's CI passes.",
         "",
-        "The GitHub CLI in this terminal is already signed in as the account this"
-        " issue is assigned to, so `gh issue view` and similar work as-is.",
+        "Git and the GitHub CLI here are already signed in as the account this"
+        " issue is assigned to, so pushing and `gh` work with no setup.",
     ])
 
 

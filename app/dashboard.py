@@ -933,7 +933,9 @@ async def start_claude_session(
             issue_number=payload.number,
             account=account.github_username,
         )
-        prompt = claude_handoff.build_prompt(issue, payload.repo, branch, base_branch)
+        prompt = claude_handoff.build_prompt(
+            issue, payload.repo, branch, base_branch, account.github_username
+        )
         # Scope this account's token to the session so git and gh inside it act
         # as the account that owns the issue, not the machine's global login.
         claude_handoff.launch_terminal(

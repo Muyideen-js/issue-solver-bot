@@ -253,7 +253,7 @@
           <td class="row-actions">
             ${canFix ? `<button class="btn btn-primary" data-fix="${esc(issue.repo)}|${issue.number}|${esc(issue.title)}|${esc(issue.url)}">Fix</button>` : ""}
             ${canFix ? `<button class="btn" data-claude="${esc(issue.repo)}|${issue.number}|${esc(issue.title)}|${esc(issue.url)}" title="Clone, branch, and open a Claude Code terminal on this machine so you can fix it yourself">Fix in Claude Code</button>` : ""}
-            ${issue.status === "IN_CLAUDE_CODE" ? `<button class="btn btn-primary" data-claude-pr="${esc(issue.repo)}|${issue.number}|${esc(issue.title)}|${esc(issue.url)}" title="Push what you committed and open the draft PR">Open the PR</button>` : ""}
+            ${issue.status === "IN_CLAUDE_CODE" ? `<button class="btn btn-primary" data-claude-pr="${esc(issue.repo)}|${issue.number}|${esc(issue.title)}|${esc(issue.url)}" title="Pick up the PR that session opened and start watching its CI">Track the PR</button>` : ""}
             ${issue.status === "IN_CLAUDE_CODE" ? `<button class="btn" data-claude="${esc(issue.repo)}|${issue.number}|${esc(issue.title)}|${esc(issue.url)}" title="Reopen the Claude Code terminal for this checkout">Reopen terminal</button>` : ""}
             ${retryNowBtn}
             ${recheckBtn}
@@ -390,7 +390,8 @@
 Branch: ${result.branch}
 Folder: ${result.checkout}
 
-Commit when you're happy, then click "Open the PR".`);
+It commits, pushes and opens the draft PR itself.
+Then click "Track the PR" so the bot watches CI.`);
         await refreshPanel();
       } catch (err) {
         alert(err.message);
@@ -400,14 +401,15 @@ Commit when you're happy, then click "Open the PR".`);
 
   async function onClaudePr(raw, btn) {
     const { repo, number, title, url } = parseKey(raw);
-    await withBusy(btn, "Opening PR", async () => {
+    await withBusy(btn, "Tracking", async () => {
       try {
         const result = await api(`/api/accounts/${state.activeAccountId}/issues/claude-pr`, {
           method: "POST",
           body: JSON.stringify({ repo, number, title, url }),
         });
-        alert(`Draft PR opened from ${result.commits} commit(s).
+        alert(`${result.adopted ? 'Tracking the PR from that session' : 'Opened a PR for you'} (${result.commits} commit(s)).
 
+Watching CI now — the bot marks it ready for review when CI passes.
 ${result.pr_url}`);
         await refreshPanel();
       } catch (err) {
