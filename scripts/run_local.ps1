@@ -66,6 +66,30 @@ if ($missing) {
 }
 
 $python = (Get-Command python).Source
+
+# Stopping the scheduled task kills this supervisor but orphans its uvicorn
+# child, which keeps holding $Port — the next start then fails to bind and
+# loops forever while the stale build keeps serving. Reclaim the port first.
+# Only this app's own uvicorn is ever stopped, and it is single-instance by
+# design (Telegram polling and the solver worker both assume one process).
+function Clear-StalePort([int]$portNumber) {
+    $owners = Get-NetTCPConnection -LocalPort $portNumber -State Listen -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty OwningProcess -Unique
+    foreach ($owner in $owners) {
+        if ($owner -eq $PID) { continue }
+        $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$owner" -ErrorAction SilentlyContinue
+        if (-not $proc) { continue }
+        if ($proc.Name -ne "python.exe" -or $proc.CommandLine -notlike "*app.main:app*") {
+            Write-Log "Port $portNumber is held by $($proc.Name) (pid $owner), which is not ours; leaving it alone."
+            continue
+        }
+        Write-Log "Stopping orphaned uvicorn (pid $owner) still holding port $portNumber"
+        Stop-Process -Id $owner -Force -ErrorAction SilentlyContinue
+    }
+    Start-Sleep -Seconds 1
+}
+
+Clear-StalePort $Port
 Write-Log "Starting on port $Port using $python"
 
 while ($true) {
