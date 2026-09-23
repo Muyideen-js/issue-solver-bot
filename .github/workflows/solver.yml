@@ -1,13 +1,16 @@
 name: Solver cycle
 
-# Replaces the always-on poller/worker. A scheduled run does one discovery +
-# drain pass and exits, so no host is billed for idle uptime and the database
-# is only awake while work is happening.
+# One discovery + drain pass, then exit — the opposite of the always-on
+# poller/worker, so nothing is billed for idle uptime.
+#
+# Manual only. The bot normally runs on a local machine (see README), so an
+# automatic schedule here would either fail every 15 minutes with no secrets
+# set, or run a second solver competing for the same jobs. Re-enable the cron
+# below only if this becomes the primary runner.
+#
+#  schedule:
+#    - cron: "*/15 * * * *"
 on:
-  schedule:
-    # Every 15 minutes. GitHub delays scheduled runs under load, so treat this
-    # as "usually 15 minutes, sometimes longer" rather than a guarantee.
-    - cron: "*/15 * * * *"
   workflow_dispatch:
 
 # A cycle claims jobs with skip_locked, so overlapping runs are safe, but
@@ -52,27 +55,3 @@ jobs:
           # kills it mid-push.
           CYCLE_MAX_SECONDS: "2700"
         run: python -m scripts.run_cycle
-
-  keepalive:
-    # GitHub silently disables schedules on a public repo after 60 days with no
-    # repository activity. A monthly commit keeps this workflow alive.
-    if: github.event_name == 'schedule'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Refresh keepalive stamp on the first of the month
-        run: |
-          if [ "$(date -u +%d)" != "01" ]; then
-            echo "Not the first of the month; nothing to do."
-            exit 0
-          fi
-          date -u +"%Y-%m-%dT%H:%M:%SZ" > .github/keepalive
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .github/keepalive
-          git diff --cached --quiet && exit 0
-          git commit -m "chore: keepalive stamp"
-          git push

@@ -228,10 +228,14 @@ Two caveats specific to running it yourself:
 
 ### Split: scheduled solver + sleeping web service
 
-Keeps the same hosts within their free allowances by letting the web service
-idle. The work moves to `.github/workflows/solver.yml`, which runs
-`python -m scripts.run_cycle` on a schedule: one discovery pass, drain the
-queue, exit.
+Keeps a metered host within its free allowance by letting the web service idle.
+The work moves to `.github/workflows/solver.yml`, which runs
+`python -m scripts.run_cycle`: one discovery pass, drain the queue, exit.
+
+That workflow is **manual-only** (`workflow_dispatch`) because the local setup
+above is the normal way to run this. Its `schedule:` block is commented out;
+uncomment it to make Actions the primary runner, and read the two caveats at the
+end of this section before you do.
 
 On the web service set:
 
