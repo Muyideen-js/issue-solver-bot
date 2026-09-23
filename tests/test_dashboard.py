@@ -471,7 +471,7 @@ def test_ai_settings_supports_openai_and_gemini(monkeypatch):
     providers = client.get("/api/providers")
     assert providers.status_code == 200
     ids = {item["id"] for item in providers.json()["providers"]}
-    assert ids == {"deepseek", "openai", "gemini"}
+    assert ids == {"deepseek", "openai", "gemini", "groq"}
 
     saved = client.post(
         "/api/settings/ai",

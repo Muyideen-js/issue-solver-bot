@@ -11,7 +11,7 @@ from app.services.llm_providers import (
 
 def test_providers_for_api_lists_all_connectors():
     providers = providers_for_api()
-    assert [item["id"] for item in providers] == ["deepseek", "openai", "gemini"]
+    assert [item["id"] for item in providers] == ["deepseek", "openai", "gemini", "groq"]
     assert "deepseek-v4-flash" in providers[0]["models"]
     assert "gpt-4o" in providers[1]["models"]
     assert providers[2]["default_model"] == "gemini-3.5-flash-lite"

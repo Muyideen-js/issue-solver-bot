@@ -47,6 +47,17 @@ turn budget ends after producing code changes, those changes are preserved in a
 draft PR for CI validation instead of being discarded. HTTP client request logs
 are suppressed because Telegram embeds the bot credential in request URLs.
 
+A provider that answers `429` is retried after the delay named in its
+`Retry-After` header, capped at five minutes, rather than on a fixed short
+backoff — a per-minute token budget needs the window to pass, and Groq's free
+tier replies with fractional seconds. When the limit still has not cleared, the
+job fails with a message naming the rate limit instead of a bare HTTP error.
+
+Provider choice is a throughput decision, not just a cost one. Groq's free tier
+allows roughly 12k tokens per minute and 100k–200k per day depending on model,
+while one solve can spend several hundred thousand tokens across its turns, so
+it suits a few issues a day rather than a backlog.
+
 Repair prompts promote exact compiler diagnostics and their named files ahead
 of general context. Repeated failures are fingerprinted so the agent is told to
 use a materially different correction. A Vercel `Authorization required to
@@ -109,8 +120,8 @@ self-signup. Sessions are a signed cookie (`ENCRYPTION_KEY` is reused as
 the signing secret — no extra config needed); set `DASHBOARD_COOKIE_SECURE=false`
 only for local `http://localhost` testing.
 
-Each portal user opens **AI settings**, chooses DeepSeek, OpenAI, or Gemini,
-selects a model, and supplies their own API key. Gemini defaults to
+Each portal user opens **AI settings**, chooses DeepSeek, OpenAI, Gemini, or
+Groq, selects a model, and supplies their own API key. Gemini defaults to
 `gemini-3.5-flash-lite`. The **Test connection** button makes a tiny real request
 to confirm that the selected key and model work before the user saves them. The
 key is encrypted at rest and is never included in normal settings responses. It

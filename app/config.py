@@ -12,6 +12,7 @@ PROVIDER_KEYS = {
     "deepseek": "DEEPSEEK_API_KEY",
     "openai": "OPENAI_API_KEY",
     "gemini": "GEMINI_API_KEY",
+    "groq": "GROQ_API_KEY",
 }
 
 
@@ -33,7 +34,7 @@ def validate_settings() -> None:
     provider = (os.getenv("AI_PROVIDER") or "deepseek").strip().lower()
     if provider not in PROVIDER_KEYS:
         raise RuntimeError(
-            "AI_PROVIDER must be one of: deepseek, openai, gemini"
+            "AI_PROVIDER must be one of: " + ", ".join(PROVIDER_KEYS)
         )
     # The environment key is only the fallback for legacy Telegram-only
     # accounts. Dashboard accounts each supply their own key in AI settings.

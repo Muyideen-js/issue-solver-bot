@@ -452,6 +452,29 @@ cast is proven safe by the compiler's inferred type.
     )
 
 
+MAX_RETRY_AFTER_SECONDS = 300
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    """Seconds to wait from Retry-After, or None when the header is unusable.
+
+    OpenAI-compatible providers send either whole seconds or a fractional value
+    (Groq replies with e.g. "7.66"). A date-form Retry-After and anything
+    unparseable fall back to the caller's own backoff. The value is capped so a
+    provider cannot park a solver lane indefinitely.
+    """
+    raw = (response.headers.get("Retry-After") or "").strip()
+    if not raw:
+        return None
+    try:
+        seconds = float(raw)
+    except ValueError:
+        return None
+    if seconds <= 0:
+        return None
+    return min(seconds, MAX_RETRY_AFTER_SECONDS)
+
+
 async def _request_agent(
     messages: list[dict],
     retries: int = 2,
@@ -488,6 +511,24 @@ async def _request_agent(
                     f"{provider_name} rejected the agent request (HTTP {response.status_code}): "
                     f"{detail or 'no response detail'}"
                 )
+            if response.status_code == 429:
+                # Providers with per-minute token budgets (Groq's free tier is
+                # 12k TPM) need the window to actually pass. Exponential
+                # backoff of 1s then 2s burns both retries in three seconds and
+                # fails a solve that would have succeeded after a short wait.
+                if attempt >= retries:
+                    raise CodingAgentError(
+                        f"{provider_name} rate limit reached and did not clear after "
+                        f"{retries + 1} attempts; try a smaller model, fewer turns, "
+                        "or a provider with a higher rate limit."
+                    )
+                delay = _retry_after_seconds(response) or min(60, 2 ** attempt)
+                logger.info(
+                    "%s rate limited; waiting %.1fs before retry %s/%s",
+                    provider_name, delay, attempt + 1, retries,
+                )
+                await asyncio.sleep(delay)
+                continue
             response.raise_for_status()
             message = response.json()["choices"][0]["message"]
             if not isinstance(message, dict):

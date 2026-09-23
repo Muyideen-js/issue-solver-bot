@@ -32,6 +32,21 @@ PROVIDERS: dict[str, dict] = {
         "env_key": "GEMINI_API_KEY",
         "env_model": "GEMINI_MODEL",
     },
+    "groq": {
+        "name": "Groq",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        # Groq deprecated Kimi K2 in favour of gpt-oss-120b, which also has a
+        # larger free daily token allowance than llama-3.3-70b-versatile.
+        "default_model": "openai/gpt-oss-120b",
+        "models": [
+            "openai/gpt-oss-120b",
+            "openai/gpt-oss-20b",
+            "llama-3.3-70b-versatile",
+            "llama-3.1-8b-instant",
+        ],
+        "env_key": "GROQ_API_KEY",
+        "env_model": "GROQ_MODEL",
+    },
 }
 
 DEFAULT_PROVIDER = "deepseek"

@@ -1,6 +1,8 @@
+import httpx
 import pytest
 
 from app.services import coding_agent
+from app.services.llm_providers import provider_config
 
 
 class FakeWorkspace:
@@ -329,3 +331,76 @@ async def test_gemini_connection_test_makes_a_tiny_real_request(monkeypatch):
     assert observed["headers"] == {"Authorization": "Bearer gemini-test-key"}
     assert observed["payload"]["max_tokens"] == 8
     assert "tools" not in observed["payload"]
+
+
+def _response(status: int, headers: dict | None = None, body: dict | None = None):
+    return httpx.Response(
+        status_code=status,
+        headers=headers or {},
+        json=body if body is not None else {"choices": [{"message": {"content": "ok"}}]},
+        request=httpx.Request("POST", "https://example.invalid/v1/chat/completions"),
+    )
+
+
+def test_retry_after_accepts_fractional_seconds():
+    """Groq sends values like "7.66"; int() would reject them."""
+    assert coding_agent._retry_after_seconds(_response(429, {"Retry-After": "7.66"})) == 7.66
+
+
+def test_retry_after_is_capped_so_a_lane_cannot_stall_forever():
+    capped = coding_agent._retry_after_seconds(_response(429, {"Retry-After": "99999"}))
+    assert capped == coding_agent.MAX_RETRY_AFTER_SECONDS
+
+
+def test_retry_after_falls_back_when_unusable():
+    for value in ("", "Wed, 21 Oct 2026 07:28:00 GMT", "0", "-5", "soon"):
+        assert coding_agent._retry_after_seconds(_response(429, {"Retry-After": value})) is None
+
+
+def test_groq_is_a_selectable_provider():
+    config = provider_config("groq")
+    assert config["url"] == "https://api.groq.com/openai/v1/chat/completions"
+    assert config["env_key"] == "GROQ_API_KEY"
+    assert config["default_model"] in config["models"]
+
+
+@pytest.mark.asyncio
+async def test_rate_limited_request_waits_for_retry_after_then_succeeds(monkeypatch):
+    waits: list[float] = []
+    calls = {"n": 0}
+
+    async def fake_post(self, url, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _response(429, {"Retry-After": "2.5"}, {"error": "rate limited"})
+        return _response(200)
+
+    async def fake_sleep(seconds):
+        waits.append(seconds)
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    monkeypatch.setattr(coding_agent.asyncio, "sleep", fake_sleep)
+
+    message = await coding_agent._request_agent(
+        [{"role": "user", "content": "hi"}], api_key="k", provider="groq"
+    )
+
+    assert message == {"content": "ok"}
+    assert waits == [2.5]
+
+
+@pytest.mark.asyncio
+async def test_persistent_rate_limit_reports_a_useful_error(monkeypatch):
+    async def fake_post(self, url, **kwargs):
+        return _response(429, {"Retry-After": "1"}, {"error": "rate limited"})
+
+    async def fake_sleep(seconds):
+        return None
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    monkeypatch.setattr(coding_agent.asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(coding_agent.CodingAgentError, match="rate limit reached"):
+        await coding_agent._request_agent(
+            [{"role": "user", "content": "hi"}], api_key="k", provider="groq"
+        )
