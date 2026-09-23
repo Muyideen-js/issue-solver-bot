@@ -8,6 +8,9 @@ from app.services.claude_handoff import HandoffError
 from app.services.workspace import WorkspaceError
 
 
+NEWLINE = chr(10)
+
+
 ISSUE = {
     "number": 42,
     "title": "Crash on empty input",
@@ -74,7 +77,7 @@ def test_prompt_handles_an_issue_with_no_description():
 def test_launch_command_opens_the_checkout_directory(tmp_path, monkeypatch):
     monkeypatch.setattr(claude_handoff.shutil, "which", lambda name: None)
 
-    command = claude_handoff.build_launch_command(tmp_path, "fix it")
+    command = claude_handoff.build_launch_command(tmp_path, "read the task file")
 
     # Without Windows Terminal the classic console is used, and `start` needs
     # its empty title argument or it treats the next quoted token as the title.
@@ -88,7 +91,7 @@ def test_launch_command_prefers_windows_terminal_when_present(tmp_path, monkeypa
         claude_handoff.shutil, "which", lambda name: "C:/wt.exe" if name == "wt" else None
     )
 
-    command = claude_handoff.build_launch_command(tmp_path, "fix it")
+    command = claude_handoff.build_launch_command(tmp_path, "read the task file")
 
     assert command[0] == "wt"
     assert str(tmp_path) in command
@@ -286,3 +289,53 @@ async def test_simultaneous_prepares_clone_once(monkeypatch, tmp_path):
 
     assert len(clones) == 1
     assert len(set(results)) == 1
+
+
+def test_task_file_sits_beside_the_checkout_not_inside_it(monkeypatch, tmp_path):
+    """A file in the working tree would show in git status and could be
+    committed into the pull request."""
+    monkeypatch.setenv("CLAUDE_HANDOFF_ROOT", str(tmp_path))
+    checkout = claude_handoff.workspace_path("owner/repo", 319, "alice")
+
+    task = claude_handoff.task_file_path(checkout)
+
+    assert task.parent == checkout.parent
+    assert checkout not in task.parents
+
+
+def test_opening_line_is_a_single_line_pointing_at_the_task_file(tmp_path):
+    task = tmp_path / "repo-issue-1.task.md"
+
+    line = claude_handoff.build_opening_line(task)
+
+    assert NEWLINE not in line
+    assert str(task) in line
+
+
+def test_launch_command_refuses_a_multi_line_opener(tmp_path):
+    """Windows Terminal drops everything after the first newline and the rest
+    spills into the shell, which is how a multi-line prompt broke a session."""
+    with pytest.raises(HandoffError, match="single line"):
+        claude_handoff.build_launch_command(tmp_path, "first" + NEWLINE + "second")
+
+
+def test_launch_writes_the_full_prompt_to_the_task_file(tmp_path, monkeypatch):
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            captured["command"] = command
+
+    monkeypatch.setattr(claude_handoff, "claude_cli_path", lambda: "C:/claude.cmd")
+    monkeypatch.setattr(claude_handoff.subprocess, "Popen", FakePopen)
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    prompt = "Fix issue #1" + NEWLINE + NEWLINE + "Please:" + NEWLINE + "1. Explore"
+
+    claude_handoff.launch_terminal(checkout, prompt)
+
+    task = claude_handoff.task_file_path(checkout)
+    assert task.read_text(encoding="utf-8") == prompt
+    # The multi-line prompt must never reach the command line.
+    assert NEWLINE not in " ".join(captured["command"])
+    assert "1. Explore" not in " ".join(captured["command"])

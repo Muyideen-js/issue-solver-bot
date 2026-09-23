@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 MAX_ISSUE_BODY_CHARS = 4_000
 GIT_TIMEOUT_SECONDS = 300
+NEWLINES = (chr(10), chr(13))
 
 
 class HandoffError(Exception):
@@ -107,18 +108,49 @@ def _quote_for_shell(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
 
 
-def build_launch_command(cwd: Path, prompt: str) -> list[str]:
+def task_file_path(checkout: Path) -> Path:
+    """Where the full task text is written.
+
+    Beside the checkout, never inside it: a file in the working tree would show
+    up in git status and could end up committed into the pull request.
+    """
+    return checkout.parent / f"{checkout.name}.task.md"
+
+
+def write_task_file(checkout: Path, prompt: str) -> Path:
+    path = task_file_path(checkout)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(prompt, encoding="utf-8")
+    return path
+
+
+def build_opening_line(task_file: Path) -> str:
+    """The single-line prompt actually passed on the command line.
+
+    Windows Terminal truncates an argument at its first newline and the rest
+    spills out as shell commands, so the multi-line task cannot be passed
+    directly -- it goes in a file and this points at it. Measured, not assumed.
+    """
+    return f"Read the task file at {task_file} and follow the instructions in it."
+
+
+def build_launch_command(cwd: Path, opening_line: str) -> list[str]:
     """Command that opens a visible terminal already running Claude Code.
 
-    Windows Terminal is preferred because it takes the working directory
-    directly; the classic console is the fallback on machines without it.
+    Takes the one-line opener from build_opening_line, never a multi-line
+    prompt. Windows Terminal is preferred because it takes the working
+    directory directly; the classic console is the fallback.
     """
+    if any(ch in opening_line for ch in NEWLINES):
+        # wt silently drops everything after the first newline and the
+        # remainder is executed as shell input. Fail loudly instead.
+        raise HandoffError("The opening line must be a single line")
     if sys.platform != "win32":
         # Best effort elsewhere; the dashboard reports what it ran either way.
-        return ["x-terminal-emulator", "-e", f"claude {prompt}"]
+        return ["x-terminal-emulator", "-e", f"claude {opening_line}"]
     if shutil.which("wt"):
-        return ["wt", "-d", str(cwd), "cmd", "/k", "claude", prompt]
-    return ["cmd", "/c", "start", "", "cmd", "/k", "claude", _quote_for_shell(prompt)]
+        return ["wt", "-d", str(cwd), "cmd", "/k", "claude", opening_line]
+    return ["cmd", "/c", "start", "", "cmd", "/k", "claude", _quote_for_shell(opening_line)]
 
 
 def claude_cli_path() -> str | None:
@@ -232,7 +264,8 @@ def launch_terminal(cwd: Path, prompt: str, env: dict[str, str] | None = None) -
             "The Claude Code CLI is not installed or not on PATH. "
             "Install it with: npm install -g @anthropic-ai/claude-code"
         )
-    command = build_launch_command(cwd, prompt)
+    task_file = write_task_file(cwd, prompt)
+    command = build_launch_command(cwd, build_opening_line(task_file))
     creation_flags = 0
     if sys.platform == "win32":
         creation_flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
