@@ -36,7 +36,7 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-button, input { font: inherit; }
+button, input, select { font: inherit; }
 button:focus-visible, input:focus-visible, a:focus-visible {
   outline: 3px solid rgba(23, 105, 224, 0.24);
   outline-offset: 2px;
@@ -120,6 +120,7 @@ button:focus-visible, input:focus-visible, a:focus-visible {
 
 @media (prefers-reduced-motion: reduce) {
   .spinner { animation-duration: 1.6s; }
+  .modal-card { animation: none; }
 }
 
 .dashboard-shell {
@@ -264,8 +265,18 @@ a:hover { color: var(--blue); text-decoration: underline; }
 .modal { position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center; padding: 1rem; background: rgba(18, 35, 65, 0.48); }
 .modal.hidden, .hidden { display: none !important; }
 .modal-card, .login-card { width: min(440px, 100%); padding: 1.5rem; border: 1px solid var(--border); background: var(--surface); box-shadow: 0 22px 60px rgba(19, 44, 82, 0.2); }
-.modal-card h2, .login-card h2 { margin: 0 0 0.35rem; font-size: 1.15rem; }
-.modal-card input, .login-card input, .form-row input {
+.modal-card {
+  border-top: 3px solid var(--blue);
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+  animation: modal-in 140ms ease-out;
+}
+.modal-card h2, .login-card h2 { margin: 0 0 0.35rem; font-size: 1.15rem; letter-spacing: -0.01em; }
+@keyframes modal-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+.modal-card input, .login-card input, .form-row input, .form-row select {
   width: 100%;
   min-height: 42px;
   margin-top: 0.7rem;
@@ -275,17 +286,63 @@ a:hover { color: var(--blue); text-decoration: underline; }
   background: #fff;
   color: var(--text);
 }
-.modal-card input:focus, .login-card input:focus, .form-row input:focus { border-color: var(--blue); box-shadow: inset 3px 0 0 var(--blue); }
-.modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1.1rem; }
+.modal-card input:focus, .login-card input:focus, .form-row input:focus, .form-row select:focus {
+  border-color: var(--blue);
+  box-shadow: inset 3px 0 0 var(--blue);
+}
+.modal-card input:hover, .form-row input:hover, .form-row select:hover { border-color: var(--blue); }
+
+/* appearance:none drops the native arrow, so the chevron is drawn back on.
+   Encoded inline because the page loads no external assets. */
+.form-row select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 2.2rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8' fill='none' stroke='%2364748b' stroke-width='1.6' stroke-linecap='square'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.75rem center;
+  background-size: 11px 7px;
+  cursor: pointer;
+}
+.form-row select:focus, .form-row select:hover {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8' fill='none' stroke='%230d4eae' stroke-width='1.6' stroke-linecap='square'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5'/%3E%3C/svg%3E");
+}
+.modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
 .split-actions { align-items: center; }
-.action-spacer { flex: 1; }
-.connection-status { margin: 1rem 0 0.35rem; padding: 0.65rem 0.75rem; border-left: 3px solid var(--border-strong); background: var(--surface-soft); color: var(--muted); font-size: 0.74rem; font-weight: 650; }
-.connection-status.connected { border-left-color: var(--ok); background: var(--ok-soft); color: var(--ok); }
-.connection-status.missing { border-left-color: var(--warn); background: var(--warn-soft); color: var(--warn); }
+.action-spacer { flex: 1 1 auto; min-width: 0; }
+.connection-status {
+  margin: 1rem 0 1.15rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 650;
+}
+.connection-status.connected { border-color: #bfe6d2; border-left-color: var(--ok); background: var(--ok-soft); color: var(--ok); }
+.connection-status.missing { border-color: #f0dcae; border-left-color: var(--warn); background: var(--warn-soft); color: var(--warn); }
 .hint { margin: 0.2rem 0 0; color: var(--muted); font-size: 0.76rem; line-height: 1.5; }
 .error { color: var(--danger); font-size: 0.76rem; }
-.form-row { margin-bottom: 0.8rem; }
-.form-row label { display: block; margin-bottom: -0.4rem; color: var(--muted); font-size: 0.72rem; font-weight: 650; }
+.form-row { margin-bottom: 0.9rem; }
+.form-row label {
+  display: block;
+  margin-bottom: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+/* The field's own 0.7rem top margin supplies the gap under the label. */
+.form-row label + input, .form-row label + select { margin-top: 0.3rem; }
 .button-block { width: 100%; }
 
 .login-page { min-height: 100vh; display: grid; place-items: center; padding: 1rem; background: linear-gradient(135deg, #eef4ff 0%, #ffffff 52%, #e7f0ff 100%); }
@@ -316,4 +373,7 @@ a:hover { color: var(--blue); text-decoration: underline; }
   .stat-card { min-height: 110px; padding: 0.85rem; }
   .workspace-heading .actions { width: 100%; }
   .workspace-heading .actions .btn { flex: 1; }
+  .modal-card { padding: 1.15rem; }
+  .modal-actions .btn { flex: 1 1 auto; }
+  .action-spacer { display: none; }
 }
