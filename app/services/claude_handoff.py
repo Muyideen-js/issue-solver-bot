@@ -98,14 +98,13 @@ def build_prompt(
         "3. Run the project's tests if it has any.",
         f"4. Commit to {branch} with a clear message.",
         f"5. Push it:  git push fork {branch}",
-        "6. Open a DRAFT pull request against the upstream repository:",
-        f"   gh pr create --repo {repo} --draft --base {base_branch}"
+        "6. Open a pull request against the upstream repository:",
+        f"   gh pr create --repo {repo} --base {base_branch}"
         f" --head {fork_owner}:{branch} --title \"<short title>\""
         " --body \"<what you changed and why>\"",
         "",
         f"The PR body MUST contain the line  Closes #{number}  so merging it"
-        " closes the issue. Leave it as a draft -- the dashboard marks it ready"
-        " for review once the repository's CI passes.",
+        " closes the issue. Open it ready for review, not as a draft.",
         "",
         "Git and the GitHub CLI here are already signed in as the account this"
         " issue is assigned to, so pushing and `gh` work with no setup.",

@@ -1010,11 +1010,29 @@ async def open_claude_session_pr(
     checkout = claude_handoff.workspace_path(
         payload.repo, payload.number, account.github_username
     )
-    try:
-        commits = await claude_handoff.commits_ahead(token, checkout, base_branch)
-        head_sha = await claude_handoff.push_branch(token, checkout, branch, base_branch)
-    except HandoffError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    head = f"{account.github_username}:{branch}"
+    # An open PR on this head is the authoritative signal that the session
+    # finished: it already pushed. Checking GitHub first means a quirk in the
+    # local checkout cannot block a PR that plainly exists.
+    pull_request = await _safe_github_call(
+        gh.find_open_pr_by_head(token, payload.repo, head)
+    )
+    adopted = pull_request is not None
+    if adopted:
+        head_sha = (pull_request.get("head") or {}).get("sha") or ""
+        try:
+            commits = await claude_handoff.commits_ahead(token, checkout, base_branch)
+        except HandoffError:
+            # Only used for the count shown to the operator.
+            commits = []
+    else:
+        try:
+            commits = await claude_handoff.commits_ahead(token, checkout, base_branch)
+            head_sha = await claude_handoff.push_branch(
+                token, checkout, branch, base_branch
+            )
+        except HandoffError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     async with AsyncSessionLocal() as db:
         job = await db.get(IssueJob, job_id)
@@ -1023,14 +1041,6 @@ async def open_claude_session_pr(
             "changed_files": [],
             "test_plan": "See the commits on this branch; CI validates the change.",
         }
-        head = f"{account.github_username}:{branch}"
-        # The session is told to leave the PR to the dashboard, but Claude may
-        # open one anyway. Adopt it instead of failing on GitHub's 422, so the
-        # job still reaches the CI watcher either way.
-        pull_request = await _safe_github_call(
-            gh.find_open_pr_by_head(token, payload.repo, head)
-        )
-        adopted = pull_request is not None
         if not adopted:
             pull_request = await _safe_github_call(gh.create_draft_pr(
                 token,
@@ -1039,7 +1049,14 @@ async def open_claude_session_pr(
                 base_branch,
                 _pr_title(job.issue_title),
                 _pr_body(job, summary),
+                draft=False,
             ))
+        elif pull_request.get("draft") and pull_request.get("node_id"):
+            # The session may still open a draft; this path is meant to land
+            # PRs ready for review.
+            await _safe_github_call(
+                gh.mark_pr_ready(token, pull_request["node_id"])
+            )
         job.status = "WAITING_CI"
         job.draft_pr_number = pull_request.get("number")
         job.draft_pr_url = pull_request.get("html_url")

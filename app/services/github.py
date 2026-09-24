@@ -175,7 +175,10 @@ async def create_draft_pr(
     base: str,
     title: str,
     body: str,
+    draft: bool = True,
 ) -> dict:
+    """Open a pull request. Draft by default: the automated solver keeps a PR
+    in draft until repository CI passes."""
     async with httpx.AsyncClient(timeout=45) as client:
         response = await client.post(
             f"{GITHUB_API}/repos/{repo}/pulls",
@@ -185,7 +188,7 @@ async def create_draft_pr(
                 "head": head,
                 "base": base,
                 "body": body,
-                "draft": True,
+                "draft": draft,
             },
         )
     response.raise_for_status()

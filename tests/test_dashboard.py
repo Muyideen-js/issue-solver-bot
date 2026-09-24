@@ -1248,3 +1248,126 @@ def test_claude_pr_creates_one_when_the_session_left_it_alone(monkeypatch, tmp_p
     body_arg = create_pr.call_args[0][5]
     assert "Closes #320" in body_arg
     client.post("/api/admin/exit-view-as")
+
+
+def test_claude_pr_adopts_without_needing_local_commits(monkeypatch):
+    """Once the session has pushed and opened the PR, the local checkout is
+    irrelevant -- requiring commits there blocked a PR that plainly existed."""
+    from unittest.mock import patch
+
+    _login_admin(monkeypatch)
+    created = client.post(
+        "/api/admin/users",
+        json={"username": "nolocaluser", "temporary_password": "temp-password-1"},
+    ).json()
+    account = asyncio.run(_add_dashboard_account(created["id"], "octocat"))
+    assert client.post(f"/api/admin/users/{created['id']}/view-as").status_code == 200
+    _claude_job(account, 786, "solver/issue-786")
+
+    existing = {
+        "number": 817, "html_url": "https://github.com/o/r/pull/817",
+        "draft": False, "node_id": "PR_abc", "head": {"sha": "c13c239"},
+    }
+
+    def boom(*args, **kwargs):
+        raise AssertionError("must not touch the local checkout when a PR exists")
+
+    with patch.object(gh, "get_repository", autospec=True) as get_repository, \
+         patch.object(gh, "find_open_pr_by_head", autospec=True) as find_pr, \
+         patch.object(gh, "create_draft_pr", autospec=True) as create_pr, \
+         patch.object(claude_handoff, "push_branch", boom), \
+         patch.object(claude_handoff, "commits_ahead", autospec=True) as commits:
+        get_repository.return_value = {"default_branch": "main", "name": "r"}
+        find_pr.return_value = existing
+        commits.return_value = []
+
+        response = client.post(
+            f"/api/accounts/{account.id}/issues/claude-pr",
+            json={"repo": "o/r", "number": 786},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["adopted"] is True
+    create_pr.assert_not_called()
+    jobs = client.get(f"/api/accounts/{account.id}/jobs").json()
+    job = next(j for j in jobs if j["number"] == 786)
+    assert job["status"] == "WAITING_CI"
+    client.post("/api/admin/exit-view-as")
+
+
+def test_claude_pr_marks_an_adopted_draft_ready_for_review(monkeypatch):
+    from unittest.mock import patch
+
+    _login_admin(monkeypatch)
+    created = client.post(
+        "/api/admin/users",
+        json={"username": "draftuser", "temporary_password": "temp-password-1"},
+    ).json()
+    account = asyncio.run(_add_dashboard_account(created["id"], "octocat"))
+    assert client.post(f"/api/admin/users/{created['id']}/view-as").status_code == 200
+    _claude_job(account, 787, "solver/issue-787")
+
+    with patch.object(gh, "get_repository", autospec=True) as get_repository, \
+         patch.object(gh, "find_open_pr_by_head", autospec=True) as find_pr, \
+         patch.object(gh, "mark_pr_ready", autospec=True) as mark_ready, \
+         patch.object(claude_handoff, "commits_ahead", autospec=True) as commits:
+        get_repository.return_value = {"default_branch": "main", "name": "r"}
+        find_pr.return_value = {
+            "number": 818, "html_url": "https://github.com/o/r/pull/818",
+            "draft": True, "node_id": "PR_xyz", "head": {"sha": "abc"},
+        }
+        commits.return_value = ["abc fix"]
+
+        response = client.post(
+            f"/api/accounts/{account.id}/issues/claude-pr",
+            json={"repo": "o/r", "number": 787},
+        )
+
+    assert response.status_code == 200, response.text
+    mark_ready.assert_called_once()
+    assert mark_ready.call_args[0][1] == "PR_xyz"
+    client.post("/api/admin/exit-view-as")
+
+
+def test_claude_pr_creates_a_ready_pull_request_not_a_draft(monkeypatch):
+    from unittest.mock import patch
+
+    _login_admin(monkeypatch)
+    created = client.post(
+        "/api/admin/users",
+        json={"username": "readyuser", "temporary_password": "temp-password-1"},
+    ).json()
+    account = asyncio.run(_add_dashboard_account(created["id"], "octocat"))
+    assert client.post(f"/api/admin/users/{created['id']}/view-as").status_code == 200
+    _claude_job(account, 788, "solver/issue-788")
+
+    with patch.object(gh, "get_repository", autospec=True) as get_repository, \
+         patch.object(gh, "find_open_pr_by_head", autospec=True) as find_pr, \
+         patch.object(gh, "create_draft_pr", autospec=True) as create_pr, \
+         patch.object(claude_handoff, "commits_ahead", autospec=True) as commits, \
+         patch.object(claude_handoff, "push_branch", autospec=True) as push:
+        get_repository.return_value = {"default_branch": "main", "name": "r"}
+        find_pr.return_value = None
+        create_pr.return_value = {
+            "number": 819, "html_url": "https://github.com/o/r/pull/819", "draft": False,
+        }
+        commits.return_value = ["abc fix"]
+        push.return_value = "abc"
+
+        response = client.post(
+            f"/api/accounts/{account.id}/issues/claude-pr",
+            json={"repo": "o/r", "number": 788},
+        )
+
+    assert response.status_code == 200, response.text
+    assert create_pr.call_args.kwargs["draft"] is False
+    client.post("/api/admin/exit-view-as")
+
+
+def test_automated_solver_pull_requests_are_still_drafts():
+    """Only the Claude Code path opens ready PRs; the unattended solver keeps a
+    PR in draft until CI passes."""
+    import inspect
+
+    default = inspect.signature(gh.create_draft_pr).parameters["draft"].default
+    assert default is True

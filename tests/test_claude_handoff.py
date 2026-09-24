@@ -60,7 +60,9 @@ def test_prompt_states_the_issue_branch_and_the_finishing_line():
     assert "gh pr create" in prompt
     assert "--head forkowner:solver/issue-42" in prompt
     assert "git push fork solver/issue-42" in prompt
-    assert "DRAFT" in prompt
+    # This path lands PRs ready for review, so the session must not draft one.
+    assert "--draft" not in prompt
+    assert "ready for review, not as a draft" in prompt
 
 
 def test_prompt_truncates_a_huge_issue_body():
