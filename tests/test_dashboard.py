@@ -1371,3 +1371,70 @@ def test_automated_solver_pull_requests_are_still_drafts():
 
     default = inspect.signature(gh.create_draft_pr).parameters["draft"].default
     assert default is True
+
+
+def test_issues_are_cached_so_the_panel_does_not_poll_github_every_refresh(monkeypatch):
+    """The panel refreshes every few seconds; one live search per refresh is
+    where intermittent ConnectTimeouts surfaced as a broken dashboard."""
+    from unittest.mock import patch
+
+    _login_admin(monkeypatch)
+    created = client.post(
+        "/api/admin/users",
+        json={"username": "cacheuser", "temporary_password": "temp-password-1"},
+    ).json()
+    account = asyncio.run(_add_dashboard_account(created["id"], "octocat"))
+    assert client.post(f"/api/admin/users/{created['id']}/view-as").status_code == 200
+
+    with patch.object(gh, "search_all_assigned_issues", autospec=True) as search:
+        search.return_value = []
+        for _ in range(5):
+            assert client.get(f"/api/accounts/{account.id}/issues").status_code == 200
+
+    assert search.call_count == 1
+    client.post("/api/admin/exit-view-as")
+
+
+def test_fixing_an_issue_refreshes_the_cached_list(monkeypatch):
+    """Acting on an issue must not leave the operator looking at a stale row."""
+    from unittest.mock import patch
+
+    _login_admin(monkeypatch)
+    created = client.post(
+        "/api/admin/users",
+        json={"username": "invaliduser", "temporary_password": "temp-password-1"},
+    ).json()
+    account = asyncio.run(_add_dashboard_account(created["id"], "octocat"))
+    assert client.post(f"/api/admin/users/{created['id']}/view-as").status_code == 200
+
+    issue = {
+        "number": 5, "title": "Needs a fix",
+        "html_url": "https://github.com/o/r/issues/5",
+        "repository_url": "https://api.github.com/repos/o/r",
+        "state": "open", "assignees": [{"login": "octocat"}],
+    }
+    with patch.object(gh, "search_all_assigned_issues", autospec=True) as search, \
+         patch.object(gh, "get_issue", autospec=True) as get_issue:
+        search.return_value = []
+        get_issue.return_value = issue
+        client.get(f"/api/accounts/{account.id}/issues")
+        client.post(
+            f"/api/accounts/{account.id}/issues/fix", json={"repo": "o/r", "number": 5}
+        )
+        client.get(f"/api/accounts/{account.id}/issues")
+
+    assert search.call_count == 2
+    client.post("/api/admin/exit-view-as")
+
+
+def test_github_clients_retry_connection_failures():
+    """A single ConnectTimeout used to fail the whole operation."""
+    import inspect
+
+    source = inspect.getsource(gh._client)
+    assert "retries=GITHUB_CONNECT_RETRIES" in source
+    assert gh.GITHUB_CONNECT_RETRIES >= 1
+    # Every call site must go through the factory. Counting constructions
+    # catches a call that slipped past with an extra keyword argument.
+    module = inspect.getsource(gh)
+    assert module.count("httpx.AsyncClient(") == 1, "a call site bypasses _client()"

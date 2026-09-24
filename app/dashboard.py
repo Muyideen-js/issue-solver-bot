@@ -163,6 +163,24 @@ def _record_login_failure(key: str) -> None:
     LOGIN_ATTEMPTS[key].append(datetime.now(timezone.utc))
 
 
+ISSUE_CACHE_SECONDS = 30
+_ISSUE_CACHE: dict[int, tuple[datetime, list]] = {}
+
+
+def _cached_issues(account_id: int) -> list | None:
+    entry = _ISSUE_CACHE.get(account_id)
+    if not entry:
+        return None
+    fetched_at, issues = entry
+    if (datetime.now(timezone.utc) - fetched_at).total_seconds() > ISSUE_CACHE_SECONDS:
+        return None
+    return issues
+
+
+def _store_issues(account_id: int, issues: list) -> None:
+    _ISSUE_CACHE[account_id] = (datetime.now(timezone.utc), issues)
+
+
 def _github_error_detail(response: httpx.Response) -> str:
     """The human-readable part of a GitHub error body, if there is one.
 
@@ -851,7 +869,15 @@ async def list_issues(account_id: int, scope_user: PortalUser = Depends(current_
     async with AsyncSessionLocal() as db:
         account = await _get_dashboard_account(db, account_id, scope_user)
         token = decrypt_token(account.github_token_encrypted)
-        issues = await _safe_github_call(gh.search_all_assigned_issues(token, account.github_username))
+        # The panel refreshes every few seconds; a live search per refresh is
+        # wasted load on GitHub and on a flaky link it is where the failures
+        # showed up. Job status below is always read fresh from the database.
+        issues = _cached_issues(account_id)
+        if issues is None:
+            issues = await _safe_github_call(
+                gh.search_all_assigned_issues(token, account.github_username)
+            )
+            _store_issues(account_id, issues)
         sibling_ids = await telegram_ids_sharing_username(db, account.github_username)
         jobs_result = await db.execute(
             select(IssueJob).where(IssueJob.telegram_id.in_(sibling_ids))
@@ -878,6 +904,7 @@ async def fix_issue(
         raise HTTPException(
             status_code=409, detail="Issue is no longer open and assigned to this account"
         )
+    _ISSUE_CACHE.pop(account_id, None)
     queued = await enqueue_issue(account, issue)
     if not queued:
         async with AsyncSessionLocal() as db:

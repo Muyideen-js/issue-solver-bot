@@ -16,8 +16,14 @@ from app.models.database import AsyncSessionLocal, IssueJob, PortalUser, SolverU
 
 @pytest_asyncio.fixture(autouse=True)
 async def _isolated_database():
+    # The issues cache is module-level, so one test's stubbed GitHub results
+    # would otherwise be served to the next.
+    from app.dashboard import _ISSUE_CACHE
+
+    _ISSUE_CACHE.clear()
     await init_db()
     yield
+    _ISSUE_CACHE.clear()
     async with AsyncSessionLocal() as db:
         await db.execute(IssueJob.__table__.delete())
         await db.execute(SolverUser.__table__.delete())

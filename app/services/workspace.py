@@ -14,6 +14,9 @@ IGNORED_PARTS = {
 }
 FORBIDDEN_PREFIXES = ((".github", "workflows"),)
 MAX_FILE_CHARS = 200_000
+# A large repository over a slow link can exceed the default; raise
+# GIT_TIMEOUT_SECONDS rather than let the clone look like a bug.
+GIT_TIMEOUT_SECONDS = max(60, int(os.getenv("GIT_TIMEOUT_SECONDS", "300")))
 
 
 class WorkspaceError(Exception):
@@ -228,7 +231,7 @@ class SolverWorkspace:
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300)
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=GIT_TIMEOUT_SECONDS)
         except asyncio.TimeoutError as exc:
             process.kill()
             await process.communicate()

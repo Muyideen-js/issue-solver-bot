@@ -7,6 +7,27 @@ from typing import Optional
 import httpx
 
 GITHUB_API = "https://api.github.com"
+
+GITHUB_CONNECT_RETRIES = 3
+GITHUB_CONNECT_TIMEOUT = 10.0
+
+
+def _client(timeout: float = 30.0, follow_redirects: bool = False) -> httpx.AsyncClient:
+    """A GitHub client that survives a flaky link.
+
+    Every call here used a bare client with no retries, so a single
+    httpx.ConnectTimeout failed the whole operation -- which is what turned
+    intermittent network trouble into "Fix" and "Fix in Claude Code" appearing
+    broken. The transport retries connection failures only; a request that
+    reached GitHub and got an HTTP error is still raised, never repeated.
+    """
+    return httpx.AsyncClient(
+        timeout=httpx.Timeout(timeout, connect=GITHUB_CONNECT_TIMEOUT),
+        transport=httpx.AsyncHTTPTransport(retries=GITHUB_CONNECT_RETRIES),
+        follow_redirects=follow_redirects,
+    )
+
+
 ISSUE_URL_PATTERN = re.compile(
     r"^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/issues/(\d+)/?$"
 )
@@ -21,7 +42,7 @@ def _headers(token: str) -> dict:
 
 
 async def validate_token(token: str) -> Optional[str]:
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with _client(30) as client:
         response = await client.get(f"{GITHUB_API}/user", headers=_headers(token))
     if response.status_code != 200:
         return None
@@ -62,7 +83,7 @@ async def search_assigned_program_issues(token: str, username: str) -> list[dict
     requires one query per label; results are merged and deduplicated by id.
     """
     issues: dict[int, dict] = {}
-    async with httpx.AsyncClient(timeout=45) as client:
+    async with _client(45) as client:
         for label in configured_program_labels():
             query = f'is:issue is:open assignee:{username} label:"{label}"'
             for item in await _search_issues(client, token, query):
@@ -72,7 +93,7 @@ async def search_assigned_program_issues(token: str, username: str) -> list[dict
 
 async def search_all_assigned_issues(token: str, username: str) -> list[dict]:
     """List every open issue assigned to this account, regardless of label."""
-    async with httpx.AsyncClient(timeout=45) as client:
+    async with _client(45) as client:
         items = await _search_issues(client, token, f"is:issue is:open assignee:{username}")
     issues: dict[int, dict] = {item["id"]: item for item in items}
     return list(issues.values())
@@ -97,7 +118,7 @@ def parse_issue_url(url: str) -> tuple[str, int] | None:
 
 
 async def get_issue(token: str, repo: str, issue_number: int) -> dict:
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with _client(30) as client:
         response = await client.get(
             f"{GITHUB_API}/repos/{repo}/issues/{issue_number}", headers=_headers(token)
         )
@@ -125,7 +146,7 @@ def is_program_issue(issue: dict) -> bool:
 
 
 async def get_repository(token: str, repo: str) -> dict:
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with _client(30) as client:
         response = await client.get(f"{GITHUB_API}/repos/{repo}", headers=_headers(token))
     response.raise_for_status()
     return response.json()
@@ -136,7 +157,7 @@ async def ensure_personal_fork(
 ) -> dict:
     """Return the user's fork, creating it and waiting for GitHub when necessary."""
     candidate = f"{username}/{repo_name}"
-    async with httpx.AsyncClient(timeout=45) as client:
+    async with _client(45) as client:
         existing = await client.get(
             f"{GITHUB_API}/repos/{candidate}", headers=_headers(token)
         )
@@ -179,7 +200,7 @@ async def create_draft_pr(
 ) -> dict:
     """Open a pull request. Draft by default: the automated solver keeps a PR
     in draft until repository CI passes."""
-    async with httpx.AsyncClient(timeout=45) as client:
+    async with _client(45) as client:
         response = await client.post(
             f"{GITHUB_API}/repos/{repo}/pulls",
             headers=_headers(token),
@@ -196,7 +217,7 @@ async def create_draft_pr(
 
 
 async def find_open_pr_by_head(token: str, repo: str, head: str) -> dict | None:
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with _client(30) as client:
         response = await client.get(
             f"{GITHUB_API}/repos/{repo}/pulls",
             headers=_headers(token),
@@ -208,7 +229,7 @@ async def find_open_pr_by_head(token: str, repo: str, head: str) -> dict | None:
 
 
 async def get_pr(token: str, repo: str, pr_number: int) -> dict:
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with _client(30) as client:
         response = await client.get(
             f"{GITHUB_API}/repos/{repo}/pulls/{pr_number}", headers=_headers(token)
         )
@@ -224,7 +245,7 @@ async def mark_pr_ready(token: str, pull_request_node_id: str) -> None:
       }
     }
     """
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with _client(30) as client:
         response = await client.post(
             "https://api.github.com/graphql",
             headers=_headers(token),
@@ -238,7 +259,7 @@ async def mark_pr_ready(token: str, pull_request_node_id: str) -> None:
 
 async def get_ci_status(token: str, repo: str, sha: str) -> str:
     """Return success, failure, pending, or none for one exact commit."""
-    async with httpx.AsyncClient(timeout=45) as client:
+    async with _client(45) as client:
         checks, statuses = await asyncio.gather(
             client.get(
                 f"{GITHUB_API}/repos/{repo}/commits/{sha}/check-runs",
@@ -273,7 +294,7 @@ async def get_ci_status(token: str, repo: str, sha: str) -> str:
 async def get_pr_changed_files(token: str, repo: str, pr_number: int) -> list[str]:
     """Return every filename currently changed by a pull request."""
     paths = []
-    async with httpx.AsyncClient(timeout=45) as client:
+    async with _client(45) as client:
         for page in range(1, 31):
             response = await client.get(
                 f"{GITHUB_API}/repos/{repo}/pulls/{pr_number}/files",
@@ -292,7 +313,7 @@ async def get_pr_changed_files(token: str, repo: str, pr_number: int) -> list[st
 
 async def get_ci_failure_details(token: str, repo: str, sha: str) -> str:
     """Collect check output, annotations, and GitHub Actions logs for repair prompts."""
-    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+    async with _client(60, follow_redirects=True) as client:
         checks, statuses = await asyncio.gather(
             client.get(
                 f"{GITHUB_API}/repos/{repo}/commits/{sha}/check-runs",
